@@ -11,11 +11,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Reusable SVG strings
   const dlIcon = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v8.5M3.5 6.5L7 10l3.5-3.5M2 12h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   const checkIcon = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 7.5l3 3 5-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  const cancelIcon = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`;
   const ffmpegIcon = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="1" y="3" width="12" height="9" rx="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M4 6.5h6M4 9h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>`;
   const copyIcon = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="4.5" y="4.5" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M9.5 4.5V2.5a1 1 0 00-1-1h-6a1 1 0 00-1 1v6a1 1 0 001 1h2" stroke="currentColor" stroke-width="1.2"/></svg>`;
 
   // Track active polling intervals so we can clean up
   const activePollers = [];
+
+  // Keep service worker alive while popup is open
+  const keepalivePort = chrome.runtime.connect({ name: 'keepalive' });
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) return;
@@ -266,8 +270,29 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   function startStreamDownload(btn, videoUrl) {
     btn.disabled = true;
-    btn.classList.add('downloaded');
+    btn.classList.add('downloading');
     btn.innerHTML = dlIcon + ' 0%';
+
+    // Insert cancel button after the download button
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'btn-action btn-cancel';
+    cancelBtn.title = 'Cancel download';
+    cancelBtn.innerHTML = cancelIcon;
+    btn.parentNode.insertBefore(cancelBtn, btn.nextSibling);
+
+    let cancelled = false;
+
+    cancelBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      cancelled = true;
+      chrome.runtime.sendMessage({ action: 'cancelDownload', url: videoUrl });
+      cancelBtn.remove();
+      btn.classList.remove('downloading');
+      btn.classList.add('download-failed');
+      btn.innerHTML = dlIcon + ' Cancelled';
+      btn.disabled = true;
+      setTimeout(() => resetBtn(btn), 3000);
+    });
 
     // Poll progress for THIS specific URL
     const pollId = setInterval(() => {
@@ -283,11 +308,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     chrome.runtime.sendMessage({ action: 'downloadStream', url: videoUrl, tabId: tab.id }, (resp) => {
       clearInterval(pollId);
+      cancelBtn.remove();
+      if (cancelled) return;
       if (resp?.ok) {
+        btn.classList.remove('downloading');
+        btn.classList.add('downloaded');
         btn.innerHTML = checkIcon + ' Done!';
         setTimeout(() => resetBtn(btn), 5000);
       } else {
-        btn.classList.remove('downloaded');
+        btn.classList.remove('downloading');
         btn.classList.add('download-failed');
         btn.innerHTML = dlIcon + ' Failed';
         btn.title = resp?.error || 'Download failed';
@@ -298,7 +327,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   function resetBtn(btn) {
     btn.disabled = false;
-    btn.classList.remove('downloaded', 'download-failed');
+    btn.classList.remove('downloaded', 'download-failed', 'downloading');
     btn.innerHTML = dlIcon + ' Download';
     btn.title = 'Download full stream as video file';
   }
@@ -320,9 +349,26 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         if (prog.state === 'downloading') {
           btn.disabled = true;
-          btn.classList.add('downloaded');
+          btn.classList.add('downloading');
           const info = prog.segsTotal ? ` (${prog.segsDone}/${prog.segsTotal})` : '';
           btn.innerHTML = dlIcon + ` ${prog.percent}%${info}`;
+
+          // Add cancel button
+          const cancelBtn = document.createElement('button');
+          cancelBtn.className = 'btn-action btn-cancel';
+          cancelBtn.title = 'Cancel download';
+          cancelBtn.innerHTML = cancelIcon;
+          btn.parentNode.insertBefore(cancelBtn, btn.nextSibling);
+
+          cancelBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            chrome.runtime.sendMessage({ action: 'cancelDownload', url });
+            cancelBtn.remove();
+            btn.classList.remove('downloading');
+            btn.classList.add('download-failed');
+            btn.innerHTML = dlIcon + ' Cancelled';
+            setTimeout(() => resetBtn(btn), 3000);
+          });
 
           // Start polling for this URL
           const pollId = setInterval(() => {
@@ -333,11 +379,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                 btn.innerHTML = dlIcon + ` ${p.percent}%${i}`;
               } else if (p.state === 'done') {
                 clearInterval(pollId);
+                cancelBtn.remove();
+                btn.classList.remove('downloading');
+                btn.classList.add('downloaded');
                 btn.innerHTML = checkIcon + ' Done!';
                 setTimeout(() => resetBtn(btn), 5000);
               } else if (p.state === 'error') {
                 clearInterval(pollId);
-                btn.classList.remove('downloaded');
+                cancelBtn.remove();
+                btn.classList.remove('downloading');
                 btn.classList.add('download-failed');
                 btn.innerHTML = dlIcon + ' Failed';
                 setTimeout(() => resetBtn(btn), 5000);

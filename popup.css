@@ -335,6 +335,23 @@ body {
   background: #E17055;
 }
 
+.btn-download-stream.downloading {
+  background: #0984E3;
+  cursor: default;
+}
+
+.btn-cancel {
+  background: #E17055;
+  color: #fff;
+  flex: 0;
+  width: 32px;
+  min-width: 32px;
+}
+
+.btn-cancel:hover {
+  background: #d63031;
+}
+
 .btn-download-stream:disabled,
 .btn-download:disabled {
   opacity: 0.9;

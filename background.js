@@ -185,6 +185,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
 
+    case 'cancelDownload': {
+      const dl = activeDownloads.get(message.url);
+      if (dl && dl.state === 'downloading') {
+        dl.state = 'cancelled';
+      }
+      sendResponse({ ok: true });
+      return true;
+    }
+
     case 'downloadVideo': {
       downloadWithFallback(message.url, message.filename, message.tabId)
         .then(() => sendResponse({ ok: true }))
@@ -315,6 +324,7 @@ const KEEPALIVE_ALARM = 'download-keepalive';
 function refreshKeepalive() {
   const hasActive = [...activeDownloads.values()].some((d) => d.state === 'downloading');
   if (hasActive) {
+    // Use minimum alarm period (Chrome enforces 1-minute minimum for MV3)
     chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.5 });
   } else {
     chrome.alarms.clear(KEEPALIVE_ALARM);
@@ -324,6 +334,16 @@ function refreshKeepalive() {
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === KEEPALIVE_ALARM) {
     refreshKeepalive(); // stop alarm if no active downloads remain
+  }
+});
+
+// Port-based keepalive: popup connects to keep service worker alive during downloads
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name === 'keepalive') {
+    // Port keeps the service worker alive while popup is open
+    port.onDisconnect.addListener(() => {
+      // Popup closed — alarm-based keepalive takes over
+    });
   }
 });
 
@@ -348,20 +368,26 @@ async function handleStreamDownload(tabId, url) {
     progress.segsTotal = segments.length;
 
     // Download segments with concurrency pool + retry
-    const CONCURRENCY = 10;
-    const RETRIES = 3;
-    const TIMEOUT_MS = 30000;
+    const CONCURRENCY = 3;
+    const RETRIES = 4;
+    const TIMEOUT_MS = 60000;
     const chunks = new Array(segments.length);
     let nextIdx = 0;
     let failures = 0;
+    let cancelled = false;
 
     async function worker() {
-      while (nextIdx < segments.length) {
+      while (nextIdx < segments.length && !cancelled) {
         const idx = nextIdx++;
+        if (idx >= segments.length) break;
         const segUrl = segments[idx];
         let lastErr = null;
 
         for (let attempt = 0; attempt < RETRIES; attempt++) {
+          // Check if download was cancelled
+          const current = activeDownloads.get(url);
+          if (!current || current.state === 'cancelled') { cancelled = true; return; }
+
           try {
             chunks[idx] = await fetchWithTimeout(segUrl, TIMEOUT_MS);
             progress.segsDone++;
@@ -371,14 +397,14 @@ async function handleStreamDownload(tabId, url) {
           } catch (e) {
             lastErr = e;
             if (attempt < RETRIES - 1) {
-              await new Promise((r) => setTimeout(r, 500 * Math.pow(2, attempt)));
+              await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt)));
             }
           }
         }
 
         if (lastErr) {
           failures++;
-          if (failures > Math.max(3, segments.length * 0.05)) {
+          if (failures > Math.max(5, segments.length * 0.1)) {
             throw new Error(`Too many failed segments (${failures}/${segments.length})`);
           }
           chunks[idx] = new ArrayBuffer(0);
@@ -392,9 +418,14 @@ async function handleStreamDownload(tabId, url) {
     for (let i = 0; i < Math.min(CONCURRENCY, segments.length); i++) workers.push(worker());
     await Promise.all(workers);
 
-    // Stitch and save
+    if (cancelled) {
+      activeDownloads.delete(url);
+      refreshKeepalive();
+      return { ok: false, error: 'Cancelled' };
+    }
+
+    // Stitch and save via offscreen document (blob URLs unreliable in MV3 service workers)
     const blob = new Blob(chunks.filter(Boolean), { type: 'video/mp2t' });
-    const blobUrl = URL.createObjectURL(blob);
 
     let filename = 'video.ts';
     try {
@@ -402,15 +433,7 @@ async function handleStreamDownload(tabId, url) {
       if (base) filename = base + '.ts';
     } catch {}
 
-    await new Promise((resolve, reject) => {
-      chrome.downloads.download({ url: blobUrl, filename, conflictAction: 'uniquify' }, (dlId) => {
-        if (chrome.runtime.lastError || !dlId) {
-          triggerBlobDownloadInTab(tabId, blobUrl, filename).then(resolve).catch(reject);
-        } else {
-          resolve(dlId);
-        }
-      });
-    });
+    await saveBlobViaOffscreen(blob, filename, tabId);
 
     progress.state = 'done';
     progress.percent = 100;
@@ -423,7 +446,6 @@ async function handleStreamDownload(tabId, url) {
 
     // Keep the "done" state visible for 60s, then clean up
     setTimeout(() => {
-      URL.revokeObjectURL(blobUrl);
       activeDownloads.delete(url);
     }, 60000);
 
@@ -491,6 +513,70 @@ function hlsResolve(url, baseUrl, originalUrl) {
     try { return new URL(originalUrl).origin + url; } catch {}
   }
   return baseUrl + url;
+}
+
+// =============================================
+// OFFSCREEN DOCUMENT — reliable blob saving for MV3
+// =============================================
+let offscreenReady = false;
+
+async function ensureOffscreen() {
+  if (offscreenReady) {
+    // Verify it's actually still open
+    const contexts = await chrome.runtime.getContexts({
+      contextTypes: ['OFFSCREEN_DOCUMENT'],
+    });
+    if (contexts.length > 0) return;
+    offscreenReady = false;
+  }
+  try {
+    await chrome.offscreen.createDocument({
+      url: 'offscreen.html',
+      reasons: ['BLOBS'],
+      justification: 'Save stitched HLS video as downloadable file',
+    });
+    offscreenReady = true;
+  } catch (e) {
+    // Already exists (race condition)
+    if (e.message?.includes('already exists')) { offscreenReady = true; return; }
+    throw e;
+  }
+}
+
+async function saveBlobViaOffscreen(blob, filename, tabId) {
+  // Store blob in Cache API (shared between SW and offscreen doc)
+  const cacheKey = `https://hls-download/${Date.now()}`;
+  const cache = await caches.open('hls-downloads');
+  await cache.put(new Request(cacheKey), new Response(blob));
+
+  try {
+    await ensureOffscreen();
+    const result = await chrome.runtime.sendMessage({
+      action: 'saveBlob', cacheKey, filename,
+    });
+    if (!result?.ok) throw new Error(result?.error || 'Offscreen save failed');
+  } catch (e) {
+    // Fallback: try chrome.downloads directly (works on Chrome 116+)
+    await cache.delete(cacheKey);
+    try {
+      const blobUrl = URL.createObjectURL(blob);
+      await new Promise((resolve, reject) => {
+        chrome.downloads.download({ url: blobUrl, filename, conflictAction: 'uniquify' }, (dlId) => {
+          if (chrome.runtime.lastError || !dlId) reject(new Error('Download API failed'));
+          else resolve(dlId);
+        });
+      });
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+    } catch {
+      // Last resort: open in tab via content script
+      if (await pingContentScript(tabId)) {
+        await new Promise((resolve) => {
+          chrome.tabs.sendMessage(tabId, { action: 'triggerDownload', blobUrl: '', filename, fallback: true }, () => resolve());
+        });
+      }
+      throw new Error('All save methods failed');
+    }
+  }
 }
 
 async function triggerBlobDownloadInTab(tabId, blobUrl, filename) {

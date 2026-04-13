@@ -17,32 +17,33 @@
   const reported = new Set();
 
   // --- Thumbnail helpers ---
-  function getPageThumbnail() {
-    // Try og:image first, then twitter:image, then first large image on page
-    const ogImage = document.querySelector('meta[property="og:image"]');
-    if (ogImage?.content) return ogImage.content;
-
-    const twImage = document.querySelector('meta[name="twitter:image"]');
-    if (twImage?.content) return twImage.content;
-
+  function getVideoThumbnail(videoEl) {
+    // Only use the actual <video> element's poster — never og:image or random page images
+    if (videoEl?.poster) return videoEl.poster;
     return null;
   }
 
-  function getVideoThumbnail(videoEl) {
-    // 1. poster attribute
-    if (videoEl?.poster) return videoEl.poster;
-
-    // 2. Look for a nearby thumbnail image (sibling or parent container)
-    if (videoEl) {
-      const container = videoEl.closest('div, figure, article, section');
-      if (container) {
-        const img = container.querySelector('img[src]');
-        if (img?.src && img.naturalWidth > 60) return img.src;
+  // Find poster for a video URL by matching it to a <video> element on the page
+  function findPosterForUrl(videoUrl) {
+    const videos = document.querySelectorAll('video');
+    for (const v of videos) {
+      // Check if this video element uses the given URL
+      const src = v.src || v.currentSrc || '';
+      if (src && videoUrl.includes(src.split('?')[0])) {
+        if (v.poster) return v.poster;
+      }
+      // Check <source> children
+      for (const s of v.querySelectorAll('source')) {
+        if (s.src && videoUrl.includes(s.src.split('?')[0])) {
+          if (v.poster) return v.poster;
+        }
       }
     }
-
-    // 3. Fallback to page-level thumbnail
-    return getPageThumbnail();
+    // If only one video on page, use its poster
+    if (videos.length === 1 && videos[0].poster) {
+      return videos[0].poster;
+    }
+    return null;
   }
 
   function report(url, type, source, thumbnail) {
@@ -55,9 +56,17 @@
       url,
       type,
       source,
-      thumbnail: thumbnail || getPageThumbnail(),
+      thumbnail: thumbnail || null,
     });
   }
+
+  // Respond to background asking for a poster for a network-detected URL
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.action === 'getPoster') {
+      const poster = findPosterForUrl(message.url);
+      sendResponse({ poster });
+    }
+  });
 
   function getExtension(url) {
     const match = url.match(/\.(m3u8|mpd|mp4|webm|flv)/i);

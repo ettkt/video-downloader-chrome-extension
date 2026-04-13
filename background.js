@@ -60,6 +60,17 @@ function addDetection(tabId, url, type, source) {
   });
 
   updateBadge(tabId);
+
+  // For network-detected videos, ask the content script for the poster
+  if (source === 'network') {
+    chrome.tabs.sendMessage(tabId, { action: 'getPoster', url }, (response) => {
+      if (chrome.runtime.lastError) return; // content script not ready
+      if (response?.poster) {
+        const entry = tabVideos.get(url);
+        if (entry) entry.thumbnail = response.poster;
+      }
+    });
+  }
 }
 
 function updateBadge(tabId) {

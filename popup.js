@@ -452,6 +452,83 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   });
 
+  // --- Resume in-progress downloads on popup open ---
+  // After cards are rendered, check if background has an active/done download
+  // and update the matching stream card's button accordingly.
+  function resumeDownloadState() {
+    chrome.runtime.sendMessage({ action: 'getDownloadProgress', tabId: tab.id }, (prog) => {
+      if (chrome.runtime.lastError || !prog) return;
+
+      // Find the stream card whose URL matches the active download
+      const cards = videoListEl.querySelectorAll('.video-card');
+      for (const card of cards) {
+        const urlEl = card.querySelector('.video-url');
+        if (!urlEl) continue;
+        const cardUrl = urlEl.getAttribute('title') || '';
+        if (cardUrl !== prog.url) continue;
+
+        const btn = card.querySelector('.btn-download-stream');
+        if (!btn) break;
+
+        if (prog.state === 'downloading') {
+          // Show current progress and start polling
+          btn.disabled = true;
+          btn.classList.add('downloaded');
+          btn.innerHTML = dlIcon + ` ${prog.percent}%`;
+
+          const pollId = setInterval(() => {
+            chrome.runtime.sendMessage({ action: 'getDownloadProgress', tabId: tab.id }, (p) => {
+              if (chrome.runtime.lastError || !p) { clearInterval(pollId); return; }
+              if (p.state === 'downloading') {
+                const segInfo = p.segsTotal ? ` (${p.segsDone}/${p.segsTotal})` : '';
+                btn.innerHTML = dlIcon + ` ${p.percent}%${segInfo}`;
+              } else if (p.state === 'done') {
+                clearInterval(pollId);
+                btn.innerHTML = checkIcon + ' Done!';
+                setTimeout(() => {
+                  btn.disabled = false;
+                  btn.classList.remove('downloaded');
+                  btn.innerHTML = dlIcon + ' Download';
+                }, 4000);
+              } else if (p.state === 'error') {
+                clearInterval(pollId);
+                btn.disabled = false;
+                btn.classList.remove('downloaded');
+                btn.classList.add('download-failed');
+                btn.innerHTML = dlIcon + ' Failed';
+                btn.title = p.error || 'Download failed';
+                setTimeout(() => {
+                  btn.classList.remove('download-failed');
+                  btn.innerHTML = dlIcon + ' Download';
+                  btn.title = 'Download full stream as video file';
+                }, 5000);
+              }
+            });
+          }, 500);
+        } else if (prog.state === 'done') {
+          btn.disabled = true;
+          btn.classList.add('downloaded');
+          btn.innerHTML = checkIcon + ' Done!';
+          setTimeout(() => {
+            btn.disabled = false;
+            btn.classList.remove('downloaded');
+            btn.innerHTML = dlIcon + ' Download';
+          }, 4000);
+        } else if (prog.state === 'error') {
+          btn.classList.add('download-failed');
+          btn.innerHTML = dlIcon + ' Failed';
+          btn.title = prog.error || 'Download failed';
+          setTimeout(() => {
+            btn.classList.remove('download-failed');
+            btn.innerHTML = dlIcon + ' Download';
+            btn.title = 'Download full stream as video file';
+          }, 5000);
+        }
+        break;
+      }
+    });
+  }
+
   // Initial load — if 0 videos found, auto-rescan once
   let hasAutoRescanned = false;
   function initialLoad() {
@@ -459,12 +536,16 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (chrome.runtime.lastError || !response) return;
       if (response.videos.length === 0 && !hasAutoRescanned) {
         hasAutoRescanned = true;
-        // Auto-rescan: inject content script and scan
         chrome.runtime.sendMessage({ action: 'rescanTab', tabId: tab.id }, () => {
-          setTimeout(() => loadVideos(), 1000);
+          setTimeout(() => {
+            loadVideos();
+            resumeDownloadState();
+          }, 1000);
         });
       } else {
         renderVideos(response.videos);
+        // Check for active downloads after rendering
+        resumeDownloadState();
       }
     });
   }

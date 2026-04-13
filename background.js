@@ -415,6 +415,30 @@ function pingContentScript(tabId) {
 // Active downloads — keyed by tabId so popup can poll progress
 const activeDownloads = new Map();
 
+// --- Service worker keepalive during downloads ---
+// MV3 service workers die after ~30s of inactivity. Alarms fire every 25s
+// to prevent this while a download is in progress.
+const KEEPALIVE_ALARM = 'download-keepalive';
+
+function startKeepalive() {
+  chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.4 }); // ~24s
+}
+
+function stopKeepalive() {
+  chrome.alarms.clear(KEEPALIVE_ALARM);
+}
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === KEEPALIVE_ALARM) {
+    // Check if any downloads are still active; if not, stop the alarm
+    const hasActive = [...activeDownloads.values()].some((d) => d.state === 'downloading');
+    if (!hasActive) {
+      stopKeepalive();
+    }
+    // The alarm handler itself keeps the service worker alive
+  }
+});
+
 async function handleStreamDownload(tabId, url) {
   // Prevent double-download of same stream
   if (activeDownloads.has(tabId)) {
@@ -426,6 +450,7 @@ async function handleStreamDownload(tabId, url) {
 
   const progress = { url, state: 'downloading', percent: 0, error: null, segsDone: 0, segsTotal: 0 };
   activeDownloads.set(tabId, progress);
+  startKeepalive();
 
   try {
     // 1. Fetch and resolve the media playlist (handles master → variant)
@@ -517,19 +542,27 @@ async function handleStreamDownload(tabId, url) {
 
     progress.state = 'done';
     progress.percent = 100;
+    stopKeepalive();
+
+    // Update badge to signal completion
+    chrome.action.setBadgeText({ text: '✓', tabId });
+    chrome.action.setBadgeBackgroundColor({ color: '#00B894', tabId });
+    // Restore normal badge after 10s
+    setTimeout(() => updateBadge(tabId), 10000);
 
     // Clean up after a delay
     setTimeout(() => {
       URL.revokeObjectURL(blobUrl);
       activeDownloads.delete(tabId);
-    }, 30000);
+    }, 60000);
 
     return { ok: true, segments: segments.length, failures };
 
   } catch (e) {
     progress.state = 'error';
     progress.error = e.message;
-    setTimeout(() => activeDownloads.delete(tabId), 10000);
+    stopKeepalive();
+    setTimeout(() => activeDownloads.delete(tabId), 30000);
     return { ok: false, error: e.message };
   }
 }

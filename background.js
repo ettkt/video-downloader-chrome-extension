@@ -32,9 +32,7 @@ const IGNORE_PATTERNS = [
   /tracker/i,
 ];
 
-// Store detected videos per tab: { tabId: Map<url, {url, type, timestamp, source, thumbnail, size, isStream}> }
 const detectedVideos = new Map();
-// Store the page URL for each tab (used as referrer for downloads)
 const tabPageUrls = new Map();
 
 function shouldIgnore(url) {
@@ -75,7 +73,7 @@ function addDetection(tabId, url, type, source) {
     timestamp: Date.now(),
     source,
     thumbnail: null,
-    size: null,       // file size in bytes (null = unknown)
+    size: null,
     isStream: isStream(type),
   };
 
@@ -98,20 +96,16 @@ function addDetection(tabId, url, type, source) {
   }
 }
 
-// HEAD request to get Content-Length without downloading the file
+// HEAD request to get Content-Length
+// NOTE: mode must be 'cors' (default) to read headers. If CORS fails, we just return null.
 async function probeFileSize(url) {
   try {
-    const resp = await fetch(url, { method: 'HEAD', mode: 'no-cors' });
+    const resp = await fetch(url, { method: 'HEAD' });
     const cl = resp.headers.get('content-length');
     if (cl) return parseInt(cl, 10);
-
-    // Some servers don't support HEAD, try range request for size
-    const cr = resp.headers.get('content-range');
-    if (cr) {
-      const match = cr.match(/\/(\d+)$/);
-      if (match) return parseInt(match[1], 10);
-    }
-  } catch {}
+  } catch {
+    // CORS or network error — that's fine, size just stays unknown
+  }
   return null;
 }
 
@@ -133,7 +127,6 @@ function updateBadge(tabId) {
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
     if (details.tabId < 0) return;
-
     const type = classifyUrl(details.url);
     if (type) {
       addDetection(details.tabId, details.url, type, 'network');
@@ -142,7 +135,7 @@ chrome.webRequest.onBeforeRequest.addListener(
   { urls: ['<all_urls>'] }
 );
 
-// Also check response headers for content-type + capture size
+// Check response headers for content-type + capture size
 chrome.webRequest.onHeadersReceived.addListener(
   (details) => {
     if (details.tabId < 0) return;
@@ -167,7 +160,7 @@ chrome.webRequest.onHeadersReceived.addListener(
     if (type) {
       addDetection(details.tabId, details.url, type, 'network');
 
-      // Try to grab Content-Length from this response
+      // Grab Content-Length from this response
       const cl = headers.find((h) => h.name.toLowerCase() === 'content-length');
       if (cl?.value) {
         const tabVideos = detectedVideos.get(details.tabId);
@@ -222,20 +215,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.action === 'downloadVideo') {
     const tabId = message.tabId;
-    const pageUrl = tabPageUrls.get(tabId) || '';
     const url = message.url;
     const filename = message.filename || undefined;
 
-    downloadWithFallback(url, filename, tabId, pageUrl)
+    downloadWithFallback(url, filename, tabId)
       .then(() => sendResponse({ ok: true }))
-      .catch((e) => sendResponse({ ok: false, error: e.message }));
-    return true; // async sendResponse
+      .catch(() => sendResponse({ ok: false }));
+    return true;
   }
 
   if (message.action === 'rescanTab') {
     const tabId = message.tabId;
     handleRescan(tabId).then((result) => sendResponse(result));
-    return true; // async sendResponse
+    return true;
   }
 
   if (message.action === 'clearVideos') {
@@ -247,9 +239,55 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-// --- Rescan logic with fallback injection ---
+// =============================================
+// DOWNLOAD — 3 strategies, no forbidden headers
+// =============================================
+async function downloadWithFallback(url, filename, tabId) {
+  // Strategy 1: chrome.downloads.download — simplest, works for public/CORS-friendly files
+  const dlId = await tryDownload({ url, filename });
+  if (dlId !== null) return;
+
+  // Strategy 2: Content script fetches with page's cookies/session, triggers <a download>
+  // This is the most reliable for auth-gated files (archive.org, CDNs with cookies)
+  try {
+    const alive = await pingContentScript(tabId);
+    if (alive) {
+      const result = await new Promise((resolve) => {
+        chrome.tabs.sendMessage(tabId, { action: 'fetchAndDownload', url, filename }, (resp) => {
+          if (chrome.runtime.lastError) resolve(null);
+          else resolve(resp);
+        });
+      });
+      if (result?.ok) return;
+    }
+  } catch {
+    // Content script not available
+  }
+
+  // Strategy 3: Open URL in a new tab — user can right-click save
+  chrome.tabs.create({ url, active: false });
+}
+
+function tryDownload(options) {
+  return new Promise((resolve) => {
+    try {
+      chrome.downloads.download(options, (downloadId) => {
+        if (chrome.runtime.lastError || !downloadId) {
+          resolve(null);
+        } else {
+          resolve(downloadId);
+        }
+      });
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+// =============================================
+// RESCAN — ping → message, or inject fresh
+// =============================================
 async function handleRescan(tabId) {
-  // First check if we can even access this tab
   let tabUrl;
   try {
     const tab = await chrome.tabs.get(tabId);
@@ -258,19 +296,15 @@ async function handleRescan(tabId) {
     return { ok: false, error: 'Tab not found' };
   }
 
-  // Can't inject into chrome://, edge://, about:, extension pages, etc.
-  if (
-    !tabUrl.startsWith('http://') &&
-    !tabUrl.startsWith('https://')
-  ) {
+  // Can't inject into non-http pages
+  if (!tabUrl.startsWith('http://') && !tabUrl.startsWith('https://')) {
     return { ok: false, error: 'Cannot scan this page type' };
   }
 
-  // Step 1: Try to message the existing content script
+  // Try messaging existing content script
   const alive = await pingContentScript(tabId);
 
   if (alive) {
-    // Content script is running — tell it to rescan
     return new Promise((resolve) => {
       chrome.tabs.sendMessage(tabId, { action: 'rescan' }, (resp) => {
         if (chrome.runtime.lastError) {
@@ -282,7 +316,7 @@ async function handleRescan(tabId) {
     });
   }
 
-  // Step 2: Content script not responding — inject it fresh
+  // Content script dead — inject fresh
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
@@ -309,62 +343,6 @@ function pingContentScript(tabId) {
     } catch {
       clearTimeout(timeout);
       resolve(false);
-    }
-  });
-}
-
-// --- Robust download with multiple fallback strategies ---
-async function downloadWithFallback(url, filename, tabId, pageUrl) {
-  // Strategy 1: Simple chrome.downloads (works for most direct files)
-  const downloadId = await tryDownload({ url, filename });
-  if (downloadId !== null) return;
-
-  // Strategy 2: Fetch the file in background with proper referrer, then download the blob
-  // This handles CDNs that need referrer/cookies
-  try {
-    const response = await fetch(url, {
-      method: 'GET',
-      credentials: 'include',
-      headers: pageUrl ? { 'Referer': pageUrl } : {},
-    });
-
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-    const blob = await response.blob();
-    const blobUrl = URL.createObjectURL(blob);
-
-    await tryDownload({ url: blobUrl, filename });
-    // Clean up blob URL after a delay to allow download to start
-    setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
-    return;
-  } catch {}
-
-  // Strategy 3: Use content script to fetch with page's cookies/session
-  try {
-    const result = await chrome.tabs.sendMessage(tabId, {
-      action: 'fetchAndDownload',
-      url,
-      filename,
-    });
-    if (result?.ok) return;
-  } catch {}
-
-  // Strategy 4: Just open the URL in a new tab as last resort
-  chrome.tabs.create({ url, active: false });
-}
-
-function tryDownload(options) {
-  return new Promise((resolve) => {
-    try {
-      chrome.downloads.download(options, (downloadId) => {
-        if (chrome.runtime.lastError || !downloadId) {
-          resolve(null);
-        } else {
-          resolve(downloadId);
-        }
-      });
-    } catch {
-      resolve(null);
     }
   });
 }

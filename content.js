@@ -69,30 +69,25 @@
 
   // Respond to messages from background/popup
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    // fetchAndDownload is async — must return true from the listener itself
+    if (message.action === 'fetchAndDownload') {
+      fetchAndDownload(message.url, message.filename)
+        .then(() => sendResponse({ ok: true }))
+        .catch(() => sendResponse({ ok: false }));
+      return true;
+    }
+
+    // All other handlers are synchronous
     try {
       if (message.action === 'ping') {
         sendResponse({ alive: true });
-        return;
-      }
-      if (message.action === 'getPoster') {
-        const poster = findPosterForUrl(message.url);
-        sendResponse({ poster });
-        return;
-      }
-      if (message.action === 'rescan') {
-        // Clear reported set so we can re-detect everything
+      } else if (message.action === 'getPoster') {
+        sendResponse({ poster: findPosterForUrl(message.url) });
+      } else if (message.action === 'rescan') {
         reported.clear();
         scanDomElements();
         scanPageSource();
         sendResponse({ ok: true });
-        return;
-      }
-      if (message.action === 'fetchAndDownload') {
-        // Fetch using the page's context (cookies, session, referrer)
-        fetchAndDownload(message.url, message.filename)
-          .then(() => sendResponse({ ok: true }))
-          .catch(() => sendResponse({ ok: false }));
-        return true; // async
       }
     } catch (e) {
       sendResponse({ error: e.message });

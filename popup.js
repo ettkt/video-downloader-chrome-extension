@@ -6,6 +6,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const videoCountEl = document.getElementById('videoCount');
   const pageUrlEl = document.getElementById('pageUrl');
   const clearBtn = document.getElementById('clearBtn');
+  const rescanBtn = document.getElementById('rescanBtn');
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) return;
@@ -246,6 +247,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   function escapeAttr(str) {
     return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
+
+  // Rescan — ask content script to re-scan DOM + source, then reload list
+  rescanBtn.addEventListener('click', () => {
+    rescanBtn.classList.add('spinning');
+    chrome.tabs.sendMessage(tab.id, { action: 'rescan' }, () => {
+      // Small delay to let new detections arrive at background
+      setTimeout(() => {
+        loadVideos();
+        rescanBtn.classList.remove('spinning');
+      }, 500);
+    });
+  });
 
   clearBtn.addEventListener('click', () => {
     chrome.runtime.sendMessage({ action: 'clearVideos', tabId: tab.id }, () => {

@@ -46,6 +46,11 @@ body {
   color: #1a1a2e;
 }
 
+.header-actions {
+  display: flex;
+  gap: 4px;
+}
+
 .btn-icon {
   display: flex;
   align-items: center;
@@ -62,7 +67,24 @@ body {
 
 .btn-icon:hover {
   background: #f0f0f0;
+  color: #555;
+}
+
+#clearBtn:hover {
   color: #e74c3c;
+}
+
+#rescanBtn:hover {
+  color: #6C5CE7;
+}
+
+#rescanBtn.spinning svg {
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 /* === Video List === */

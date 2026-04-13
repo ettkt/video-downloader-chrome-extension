@@ -60,11 +60,17 @@
     });
   }
 
-  // Respond to background asking for a poster for a network-detected URL
+  // Respond to messages from background/popup
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === 'getPoster') {
       const poster = findPosterForUrl(message.url);
       sendResponse({ poster });
+    }
+    if (message.action === 'rescan') {
+      // Re-run all scans without reloading the page
+      scanDomElements();
+      scanPageSource();
+      sendResponse({ ok: true });
     }
   });
 

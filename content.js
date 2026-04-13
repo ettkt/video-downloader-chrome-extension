@@ -269,6 +269,36 @@
   }
 
   // ======================
+  // 4. Intercept fetch/XHR to catch programmatic stream loading (HLS.js, dash.js, etc.)
+  // ======================
+  function interceptNetworkCalls() {
+    // Intercept fetch()
+    const originalFetch = window.fetch;
+    window.fetch = function (...args) {
+      try {
+        const url = typeof args[0] === 'string' ? args[0] : args[0]?.url;
+        if (url) {
+          const ext = getExtension(url);
+          if (ext) tryReport(url, 'network', null);
+        }
+      } catch {}
+      return originalFetch.apply(this, args);
+    };
+
+    // Intercept XMLHttpRequest
+    const originalOpen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+      try {
+        if (url && typeof url === 'string') {
+          const ext = getExtension(url);
+          if (ext) tryReport(url, 'network', null);
+        }
+      } catch {}
+      return originalOpen.call(this, method, url, ...rest);
+    };
+  }
+
+  // ======================
   // Combined scan
   // ======================
   function scanAll() {
@@ -369,6 +399,7 @@
   }
 
   // --- Run ---
+  interceptNetworkCalls();
   scanAll();
   observeDom();
 })();

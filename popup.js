@@ -481,5 +481,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   });
 
-  loadVideos();
+  // Initial load — if 0 videos found, auto-rescan once
+  let hasAutoRescanned = false;
+  function initialLoad() {
+    chrome.runtime.sendMessage({ action: 'getVideos', tabId: tab.id }, (response) => {
+      if (chrome.runtime.lastError || !response) return;
+      if (response.videos.length === 0 && !hasAutoRescanned) {
+        hasAutoRescanned = true;
+        // Auto-rescan: inject content script and scan
+        chrome.runtime.sendMessage({ action: 'rescanTab', tabId: tab.id }, () => {
+          setTimeout(() => loadVideos(), 1000);
+        });
+      } else {
+        renderVideos(response.videos);
+      }
+    });
+  }
+  initialLoad();
 });

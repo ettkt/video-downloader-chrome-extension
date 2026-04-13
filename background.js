@@ -56,6 +56,7 @@ function addDetection(tabId, url, type, source) {
     type,
     timestamp: Date.now(),
     source,
+    thumbnail: null,
   });
 
   updateBadge(tabId);
@@ -142,8 +143,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.action === 'videoFound' && sender.tab) {
-    const { url, type, source } = message;
+    const { url, type, source, thumbnail } = message;
     addDetection(sender.tab.id, url, type, source || 'dom');
+    // Store thumbnail if provided
+    if (thumbnail) {
+      const tabVideos = detectedVideos.get(sender.tab.id);
+      const entry = tabVideos?.get(url);
+      if (entry && !entry.thumbnail) {
+        entry.thumbnail = thumbnail;
+      }
+    }
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (message.action === 'downloadVideo') {
+    chrome.downloads.download({
+      url: message.url,
+      filename: message.filename || undefined,
+    });
     sendResponse({ ok: true });
     return true;
   }

@@ -16,7 +16,36 @@
 
   const reported = new Set();
 
-  function report(url, type, source) {
+  // --- Thumbnail helpers ---
+  function getPageThumbnail() {
+    // Try og:image first, then twitter:image, then first large image on page
+    const ogImage = document.querySelector('meta[property="og:image"]');
+    if (ogImage?.content) return ogImage.content;
+
+    const twImage = document.querySelector('meta[name="twitter:image"]');
+    if (twImage?.content) return twImage.content;
+
+    return null;
+  }
+
+  function getVideoThumbnail(videoEl) {
+    // 1. poster attribute
+    if (videoEl?.poster) return videoEl.poster;
+
+    // 2. Look for a nearby thumbnail image (sibling or parent container)
+    if (videoEl) {
+      const container = videoEl.closest('div, figure, article, section');
+      if (container) {
+        const img = container.querySelector('img[src]');
+        if (img?.src && img.naturalWidth > 60) return img.src;
+      }
+    }
+
+    // 3. Fallback to page-level thumbnail
+    return getPageThumbnail();
+  }
+
+  function report(url, type, source, thumbnail) {
     const baseUrl = url.split('?')[0];
     if (reported.has(baseUrl)) return;
     reported.add(baseUrl);
@@ -26,6 +55,7 @@
       url,
       type,
       source,
+      thumbnail: thumbnail || getPageThumbnail(),
     });
   }
 
@@ -38,24 +68,27 @@
   function scanDomElements() {
     // Video and source elements
     document.querySelectorAll('video, audio').forEach((el) => {
+      const thumb = getVideoThumbnail(el);
       const src = el.src || el.currentSrc;
       if (src) {
         const ext = getExtension(src);
-        if (ext) report(src, TYPE_MAP[ext], 'dom');
+        if (ext) report(src, TYPE_MAP[ext], 'dom', thumb);
       }
 
       el.querySelectorAll('source').forEach((source) => {
         if (source.src) {
           const ext = getExtension(source.src);
-          if (ext) report(source.src, TYPE_MAP[ext], 'dom');
+          if (ext) report(source.src, TYPE_MAP[ext], 'dom', thumb);
         }
       });
     });
 
     // Standalone source elements
     document.querySelectorAll('source[src]').forEach((el) => {
+      const videoParent = el.closest('video');
+      const thumb = getVideoThumbnail(videoParent);
       const ext = getExtension(el.src);
-      if (ext) report(el.src, TYPE_MAP[ext], 'dom');
+      if (ext) report(el.src, TYPE_MAP[ext], 'dom', thumb);
     });
 
     // Embed and object
@@ -63,7 +96,7 @@
       const url = el.src || el.getAttribute('data');
       if (url) {
         const ext = getExtension(url);
-        if (ext) report(url, TYPE_MAP[ext], 'dom');
+        if (ext) report(url, TYPE_MAP[ext], 'dom', null);
       }
     });
   }
@@ -76,7 +109,7 @@
       if (matches) {
         matches.forEach((url) => {
           const ext = getExtension(url);
-          if (ext) report(url, TYPE_MAP[ext], 'source');
+          if (ext) report(url, TYPE_MAP[ext], 'source', null);
         });
       }
     });
@@ -87,7 +120,7 @@
         const val = el.getAttribute(attr);
         if (val) {
           const ext = getExtension(val);
-          if (ext) report(val, TYPE_MAP[ext], 'dom');
+          if (ext) report(val, TYPE_MAP[ext], 'dom', null);
         }
       }
     });

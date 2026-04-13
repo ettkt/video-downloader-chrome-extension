@@ -177,15 +177,14 @@
       tryReport(el.src || el.getAttribute('data'), 'dom', null);
     });
 
-    // <a> tags that link directly to video files
-    document.querySelectorAll('a[href]').forEach((el) => {
-      const href = el.href;
-      if (href) tryReport(href, 'dom', null);
+    // <a> tags that link directly to video files (only check href ending in video ext)
+    document.querySelectorAll('a[href$=".mp4"], a[href$=".webm"], a[href$=".m3u8"], a[href$=".mpd"], a[href$=".flv"]').forEach((el) => {
+      if (el.href) tryReport(el.href, 'dom', null);
     });
 
     // <iframe> src that might be a direct video
     document.querySelectorAll('iframe[src]').forEach((el) => {
-      tryReport(el.src, 'dom', null);
+      if (el.src) tryReport(el.src, 'dom', null);
     });
   }
 
@@ -237,16 +236,17 @@
       }
     });
 
-    // Scan the full HTML as a last resort for URLs buried in comments, noscript, etc.
-    try {
-      const html = document.documentElement.outerHTML;
-      const matches = html.match(VIDEO_REGEX);
-      if (matches) {
-        // Deduplicate before reporting
-        const unique = [...new Set(matches)];
-        unique.forEach((url) => tryReport(url, 'source', null));
-      }
-    } catch {}
+    // Scan <noscript> blocks (can contain video URLs on some sites)
+    document.querySelectorAll('noscript').forEach((el) => {
+      try {
+        const text = el.textContent;
+        if (!text || text.length > 50000) return; // skip huge blocks
+        const matches = text.match(VIDEO_REGEX);
+        if (matches) {
+          [...new Set(matches)].forEach((url) => tryReport(url, 'source', null));
+        }
+      } catch {}
+    });
   }
 
   // ======================

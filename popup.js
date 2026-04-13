@@ -132,22 +132,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     let actionsHtml;
     if (isStreamType) {
       actionsHtml = `
-        <button class="btn-action btn-ffmpeg" title="Copy ffmpeg command to download this stream">
+        <button class="btn-action btn-download-stream" title="Download full stream as video file">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path d="M7 1v8.5M3.5 6.5L7 10l3.5-3.5M2 12h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Download
+        </button>
+        <button class="btn-action btn-ffmpeg" title="Copy FFmpeg command">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
             <rect x="1" y="3" width="12" height="9" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
             <path d="M4 6.5h6M4 9h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
           </svg>
-          Copy FFmpeg
         </button>
         <button class="btn-action btn-copy" title="Copy URL">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
             <rect x="4.5" y="4.5" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
             <path d="M9.5 4.5V2.5a1 1 0 00-1-1h-6a1 1 0 00-1 1v6a1 1 0 001 1h2" stroke="currentColor" stroke-width="1.2"/>
-          </svg>
-        </button>
-        <button class="btn-action btn-open" title="Open in new tab">
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-            <path d="M6 2H3a1 1 0 00-1 1v8a1 1 0 001 1h8a1 1 0 001-1V8M8 2h4v4M7 7l5-5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
         </button>
       `;
@@ -232,6 +232,54 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // --- Event listeners ---
+
+    // Download stream (HLS/DASH)
+    const streamDlBtn = card.querySelector('.btn-download-stream');
+    if (streamDlBtn) {
+      streamDlBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        streamDlBtn.classList.add('downloaded');
+        streamDlBtn.innerHTML = `
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path d="M7 1v8.5M3.5 6.5L7 10l3.5-3.5M2 12h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Fetching...
+        `;
+
+        chrome.runtime.sendMessage({
+          action: 'downloadStream',
+          url: video.url,
+          tabId: tab.id,
+        }, (resp) => {
+          if (resp?.ok) {
+            streamDlBtn.innerHTML = `
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <path d="M3 7.5l3 3 5-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              Downloading!
+            `;
+          } else {
+            streamDlBtn.classList.remove('downloaded');
+            streamDlBtn.classList.add('download-failed');
+            streamDlBtn.innerHTML = `
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <path d="M7 1v8.5M3.5 6.5L7 10l3.5-3.5M2 12h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              Failed
+            `;
+          }
+          setTimeout(() => {
+            streamDlBtn.classList.remove('downloaded', 'download-failed');
+            streamDlBtn.innerHTML = `
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <path d="M7 1v8.5M3.5 6.5L7 10l3.5-3.5M2 12h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              Download
+            `;
+          }, 4000);
+        });
+      });
+    }
 
     // Download (direct files only)
     const dlBtn = card.querySelector('.btn-download');

@@ -234,6 +234,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.action === 'downloadStream') {
+    const tabId = message.tabId;
+    const url = message.url;
+
+    // Delegate HLS download to content script (has page cookies)
+    handleStreamDownload(tabId, url).then((resp) => {
+      sendResponse(resp);
+    });
+    return true;
+  }
+
   if (message.action === 'downloadVideo') {
     const tabId = message.tabId;
     const url = message.url;
@@ -365,5 +376,35 @@ function pingContentScript(tabId) {
       clearTimeout(timeout);
       resolve(false);
     }
+  });
+}
+
+// =============================================
+// STREAM DOWNLOAD — fetch m3u8 segments and stitch
+// =============================================
+async function handleStreamDownload(tabId, url) {
+  // Ensure content script is alive
+  let alive = await pingContentScript(tabId);
+  if (!alive) {
+    try {
+      await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+      // Wait for script to initialize
+      await new Promise((r) => setTimeout(r, 500));
+      alive = await pingContentScript(tabId);
+    } catch {
+      return { ok: false, error: 'Cannot inject content script' };
+    }
+  }
+
+  if (!alive) return { ok: false, error: 'Content script not responding' };
+
+  return new Promise((resolve) => {
+    chrome.tabs.sendMessage(tabId, { action: 'downloadHlsStream', url }, (resp) => {
+      if (chrome.runtime.lastError) {
+        resolve({ ok: false, error: chrome.runtime.lastError.message });
+      } else {
+        resolve(resp || { ok: false });
+      }
+    });
   });
 }

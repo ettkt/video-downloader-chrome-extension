@@ -102,10 +102,17 @@
 
   // --- Message handler ---
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    // Async handlers — must return true
     if (message.action === 'fetchAndDownload') {
       fetchAndDownload(message.url, message.filename)
         .then(() => sendResponse({ ok: true }))
         .catch(() => sendResponse({ ok: false }));
+      return true;
+    }
+    if (message.action === 'downloadHlsStream') {
+      downloadHlsStream(message.url)
+        .then(() => sendResponse({ ok: true }))
+        .catch((e) => sendResponse({ ok: false, error: e.message }));
       return true;
     }
 
@@ -267,6 +274,82 @@
   function scanAll() {
     scanDomElements();
     scanPageSource();
+  }
+
+  // --- HLS Stream Download ---
+  async function downloadHlsStream(m3u8Url) {
+    const playlistText = await (await fetch(m3u8Url, { credentials: 'include' })).text();
+    const baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf('/') + 1);
+
+    const lines = playlistText.split('\n').map((l) => l.trim()).filter(Boolean);
+    const subPlaylists = lines.filter((l) => !l.startsWith('#') && l.includes('.m3u8'));
+
+    // Master playlist — pick highest quality variant
+    if (subPlaylists.length > 0) {
+      let bestUrl = subPlaylists[subPlaylists.length - 1];
+      let bestBandwidth = 0;
+
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].startsWith('#EXT-X-STREAM-INF')) {
+          const bwMatch = lines[i].match(/BANDWIDTH=(\d+)/);
+          const bw = bwMatch ? parseInt(bwMatch[1], 10) : 0;
+          for (let j = i + 1; j < lines.length; j++) {
+            if (!lines[j].startsWith('#')) {
+              if (bw > bestBandwidth) {
+                bestBandwidth = bw;
+                bestUrl = lines[j];
+              }
+              break;
+            }
+          }
+        }
+      }
+
+      return downloadHlsStream(hlsResolveUrl(bestUrl, baseUrl, m3u8Url));
+    }
+
+    // Media playlist — extract and download segments
+    const segments = [];
+    for (const line of lines) {
+      if (!line.startsWith('#')) {
+        segments.push(hlsResolveUrl(line, baseUrl, m3u8Url));
+      }
+    }
+
+    if (segments.length === 0) throw new Error('No segments found');
+
+    // Download in batches of 6
+    const allChunks = [];
+    for (let i = 0; i < segments.length; i += 6) {
+      const batch = segments.slice(i, i + 6);
+      const results = await Promise.all(
+        batch.map((u) => fetch(u, { credentials: 'include' }).then((r) => {
+          if (!r.ok) throw new Error(`Segment HTTP ${r.status}`);
+          return r.arrayBuffer();
+        }))
+      );
+      allChunks.push(...results);
+    }
+
+    // Stitch and save
+    const blob = new Blob(allChunks, { type: 'video/mp2t' });
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = 'video.ts';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+  }
+
+  function hlsResolveUrl(url, baseUrl, originalUrl) {
+    if (url.startsWith('http://') || url.startsWith('https://')) return url;
+    if (url.startsWith('/')) {
+      try { return new URL(originalUrl).origin + url; } catch {}
+    }
+    return baseUrl + url;
   }
 
   // --- Download helper ---

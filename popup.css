@@ -318,9 +318,29 @@ body {
   color: #333;
 }
 
+.btn-download-stream {
+  background: #6C5CE7;
+  color: #fff;
+}
+
+.btn-download-stream:hover {
+  background: #5a4bd6;
+}
+
+.btn-download-stream.downloaded {
+  background: #00B894;
+}
+
+.btn-download-stream.download-failed {
+  background: #E17055;
+}
+
 .btn-ffmpeg {
   background: #2d3436;
   color: #fff;
+  flex: 0;
+  width: 32px;
+  min-width: 32px;
 }
 
 .btn-ffmpeg:hover {

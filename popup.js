@@ -187,20 +187,49 @@ document.addEventListener('DOMContentLoaded', async () => {
       <div class="card-actions">${actionsHtml}</div>
     `;
 
-    // --- Thumbnail: try to generate frame for direct video URLs ---
-    if (!video.thumbnail && !isStreamType) {
-      generateFrameThumbnail(video.url).then((dataUrl) => {
-        if (dataUrl) {
-          const thumbContainer = card.querySelector('.card-thumbnail');
-          const placeholder = thumbContainer.querySelector('.thumb-placeholder');
-          if (placeholder) {
-            const img = document.createElement('img');
-            img.src = dataUrl;
-            img.alt = '';
-            thumbContainer.replaceChild(img, placeholder);
+    // --- Probe metadata for direct video URLs (thumbnail + duration) ---
+    if (!isStreamType) {
+      const needsThumb = !video.thumbnail;
+      const needsDuration = !durationStr;
+
+      if (needsThumb || needsDuration) {
+        probeVideoMetadata(video.url, needsThumb).then((meta) => {
+          // Update thumbnail
+          if (meta.thumbnail && needsThumb) {
+            const thumbContainer = card.querySelector('.card-thumbnail');
+            const placeholder = thumbContainer.querySelector('.thumb-placeholder');
+            if (placeholder) {
+              const img = document.createElement('img');
+              img.src = meta.thumbnail;
+              img.alt = '';
+              thumbContainer.replaceChild(img, placeholder);
+            }
           }
-        }
-      });
+          // Update duration
+          if (meta.duration) {
+            const durStr = formatDuration(meta.duration);
+            if (durStr) {
+              // Add duration overlay on thumbnail
+              let durOverlay = card.querySelector('.thumb-duration');
+              if (!durOverlay) {
+                durOverlay = document.createElement('span');
+                durOverlay.className = 'thumb-duration';
+                card.querySelector('.card-thumbnail').appendChild(durOverlay);
+              }
+              durOverlay.textContent = durStr;
+
+              // Add duration tag in meta row
+              const metaRow = card.querySelector('.card-meta');
+              if (metaRow && !metaRow.querySelector('.duration-tag')) {
+                const tag = document.createElement('span');
+                tag.className = 'source-tag duration-tag';
+                tag.textContent = durStr;
+                metaRow.insertBefore(tag, metaRow.querySelector('.stream-tag'));
+              }
+            }
+          }
+        });
+      }
     }
 
     // --- Event listeners ---
@@ -314,8 +343,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     return card;
   }
 
-  function generateFrameThumbnail(url) {
+  // Probe a video URL for duration and optionally a frame thumbnail
+  // Only downloads metadata (~first few KB), not the whole file
+  function probeVideoMetadata(url, captureFrame) {
     return new Promise((resolve) => {
+      const result = { duration: null, thumbnail: null };
       const video = document.createElement('video');
       video.crossOrigin = 'anonymous';
       video.muted = true;
@@ -323,11 +355,24 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       const timeout = setTimeout(() => {
         video.src = '';
-        resolve(null);
-      }, 4000);
+        resolve(result);
+      }, 6000);
 
-      video.addEventListener('loadeddata', () => {
-        video.currentTime = Math.min(1, video.duration * 0.1);
+      video.addEventListener('loadedmetadata', () => {
+        // Duration is available as soon as metadata loads
+        if (video.duration && isFinite(video.duration) && video.duration > 0) {
+          result.duration = video.duration;
+        }
+
+        if (captureFrame) {
+          // Seek to get a frame for thumbnail
+          video.currentTime = Math.min(1, video.duration * 0.1);
+        } else {
+          // No frame needed, we're done
+          clearTimeout(timeout);
+          video.src = '';
+          resolve(result);
+        }
       });
 
       video.addEventListener('seeked', () => {
@@ -338,18 +383,17 @@ document.addEventListener('DOMContentLoaded', async () => {
           canvas.height = 180;
           const ctx = canvas.getContext('2d');
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
-          video.src = '';
-          resolve(dataUrl);
+          result.thumbnail = canvas.toDataURL('image/jpeg', 0.7);
         } catch {
-          video.src = '';
-          resolve(null);
+          // CORS blocked frame capture — that's fine
         }
+        video.src = '';
+        resolve(result);
       });
 
       video.addEventListener('error', () => {
         clearTimeout(timeout);
-        resolve(null);
+        resolve(result);
       });
 
       video.src = url;

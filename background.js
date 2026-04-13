@@ -223,15 +223,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'downloadVideo') {
     const tabId = message.tabId;
     const pageUrl = tabPageUrls.get(tabId) || '';
+    const url = message.url;
+    const filename = message.filename || undefined;
 
-    chrome.downloads.download({
-      url: message.url,
-      filename: message.filename || undefined,
-      // Pass the page URL as referrer — many CDNs require this
-      headers: pageUrl ? [{ name: 'Referer', value: pageUrl }] : undefined,
-    });
-    sendResponse({ ok: true });
-    return true;
+    downloadWithFallback(url, filename, tabId, pageUrl)
+      .then(() => sendResponse({ ok: true }))
+      .catch((e) => sendResponse({ ok: false, error: e.message }));
+    return true; // async sendResponse
+  }
+
+  if (message.action === 'rescanTab') {
+    const tabId = message.tabId;
+    handleRescan(tabId).then((result) => sendResponse(result));
+    return true; // async sendResponse
   }
 
   if (message.action === 'clearVideos') {
@@ -242,3 +246,125 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 });
+
+// --- Rescan logic with fallback injection ---
+async function handleRescan(tabId) {
+  // First check if we can even access this tab
+  let tabUrl;
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    tabUrl = tab.url || '';
+  } catch {
+    return { ok: false, error: 'Tab not found' };
+  }
+
+  // Can't inject into chrome://, edge://, about:, extension pages, etc.
+  if (
+    !tabUrl.startsWith('http://') &&
+    !tabUrl.startsWith('https://')
+  ) {
+    return { ok: false, error: 'Cannot scan this page type' };
+  }
+
+  // Step 1: Try to message the existing content script
+  const alive = await pingContentScript(tabId);
+
+  if (alive) {
+    // Content script is running — tell it to rescan
+    return new Promise((resolve) => {
+      chrome.tabs.sendMessage(tabId, { action: 'rescan' }, (resp) => {
+        if (chrome.runtime.lastError) {
+          resolve({ ok: false, error: 'Message failed' });
+        } else {
+          resolve({ ok: true, method: 'message' });
+        }
+      });
+    });
+  }
+
+  // Step 2: Content script not responding — inject it fresh
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['content.js'],
+    });
+    return { ok: true, method: 'injected' };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+function pingContentScript(tabId) {
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => resolve(false), 500);
+    try {
+      chrome.tabs.sendMessage(tabId, { action: 'ping' }, (response) => {
+        clearTimeout(timeout);
+        if (chrome.runtime.lastError || !response) {
+          resolve(false);
+        } else {
+          resolve(true);
+        }
+      });
+    } catch {
+      clearTimeout(timeout);
+      resolve(false);
+    }
+  });
+}
+
+// --- Robust download with multiple fallback strategies ---
+async function downloadWithFallback(url, filename, tabId, pageUrl) {
+  // Strategy 1: Simple chrome.downloads (works for most direct files)
+  const downloadId = await tryDownload({ url, filename });
+  if (downloadId !== null) return;
+
+  // Strategy 2: Fetch the file in background with proper referrer, then download the blob
+  // This handles CDNs that need referrer/cookies
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      credentials: 'include',
+      headers: pageUrl ? { 'Referer': pageUrl } : {},
+    });
+
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const blob = await response.blob();
+    const blobUrl = URL.createObjectURL(blob);
+
+    await tryDownload({ url: blobUrl, filename });
+    // Clean up blob URL after a delay to allow download to start
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+    return;
+  } catch {}
+
+  // Strategy 3: Use content script to fetch with page's cookies/session
+  try {
+    const result = await chrome.tabs.sendMessage(tabId, {
+      action: 'fetchAndDownload',
+      url,
+      filename,
+    });
+    if (result?.ok) return;
+  } catch {}
+
+  // Strategy 4: Just open the URL in a new tab as last resort
+  chrome.tabs.create({ url, active: false });
+}
+
+function tryDownload(options) {
+  return new Promise((resolve) => {
+    try {
+      chrome.downloads.download(options, (downloadId) => {
+        if (chrome.runtime.lastError || !downloadId) {
+          resolve(null);
+        } else {
+          resolve(downloadId);
+        }
+      });
+    } catch {
+      resolve(null);
+    }
+  });
+}

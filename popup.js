@@ -191,28 +191,48 @@ document.addEventListener('DOMContentLoaded', async () => {
       dlBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         const filename = guessFilename(video.url, video.type);
+
+        dlBtn.classList.add('downloaded');
+        dlBtn.innerHTML = `
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path d="M7 1v8.5M3.5 6.5L7 10l3.5-3.5M2 12h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Starting...
+        `;
+
         chrome.runtime.sendMessage({
           action: 'downloadVideo',
           url: video.url,
           filename,
           tabId: tab.id,
+        }, (resp) => {
+          if (resp?.ok) {
+            dlBtn.innerHTML = `
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <path d="M3 7.5l3 3 5-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              Downloading!
+            `;
+          } else {
+            dlBtn.classList.remove('downloaded');
+            dlBtn.classList.add('download-failed');
+            dlBtn.innerHTML = `
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <path d="M6 2H3a1 1 0 00-1 1v8a1 1 0 001 1h8a1 1 0 001-1V8M8 2h4v4M7 7l5-5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              Opened in tab
+            `;
+          }
+          setTimeout(() => {
+            dlBtn.classList.remove('downloaded', 'download-failed');
+            dlBtn.innerHTML = `
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <path d="M7 1v8.5M3.5 6.5L7 10l3.5-3.5M2 12h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              Download${sizeStr ? ' (' + sizeStr + ')' : ''}
+            `;
+          }, 3000);
         });
-        dlBtn.classList.add('downloaded');
-        dlBtn.innerHTML = `
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-            <path d="M3 7.5l3 3 5-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-          Downloading...
-        `;
-        setTimeout(() => {
-          dlBtn.classList.remove('downloaded');
-          dlBtn.innerHTML = `
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <path d="M7 1v8.5M3.5 6.5L7 10l3.5-3.5M2 12h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            Download${sizeStr ? ' (' + sizeStr + ')' : ''}
-          `;
-        }, 3000);
       });
     }
 
@@ -326,14 +346,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
-  // Rescan
+  // Rescan — goes through background for fallback injection
   rescanBtn.addEventListener('click', () => {
     rescanBtn.classList.add('spinning');
-    chrome.tabs.sendMessage(tab.id, { action: 'rescan' }, () => {
+    chrome.runtime.sendMessage({ action: 'rescanTab', tabId: tab.id }, (result) => {
+      if (chrome.runtime.lastError) {
+        rescanBtn.classList.remove('spinning');
+        return;
+      }
+      // Wait for detections to arrive, then reload
+      const delay = result?.method === 'injected' ? 1500 : 600;
       setTimeout(() => {
         loadVideos();
         rescanBtn.classList.remove('spinning');
-      }, 500);
+      }, delay);
     });
   });
 

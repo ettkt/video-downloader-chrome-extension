@@ -70,9 +70,14 @@
   // Respond to messages from background/popup
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     try {
+      if (message.action === 'ping') {
+        sendResponse({ alive: true });
+        return;
+      }
       if (message.action === 'getPoster') {
         const poster = findPosterForUrl(message.url);
         sendResponse({ poster });
+        return;
       }
       if (message.action === 'rescan') {
         // Clear reported set so we can re-detect everything
@@ -80,6 +85,14 @@
         scanDomElements();
         scanPageSource();
         sendResponse({ ok: true });
+        return;
+      }
+      if (message.action === 'fetchAndDownload') {
+        // Fetch using the page's context (cookies, session, referrer)
+        fetchAndDownload(message.url, message.filename)
+          .then(() => sendResponse({ ok: true }))
+          .catch(() => sendResponse({ ok: false }));
+        return true; // async
       }
     } catch (e) {
       sendResponse({ error: e.message });
@@ -172,6 +185,22 @@
       childList: true,
       subtree: true,
     });
+  }
+
+  // --- Download helper: fetch with page context and trigger save ---
+  async function fetchAndDownload(url, filename) {
+    const response = await fetch(url, { credentials: 'include' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const blob = await response.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = filename || 'video.mp4';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
   }
 
   // --- Run scans ---

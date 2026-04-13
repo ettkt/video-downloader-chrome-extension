@@ -294,6 +294,11 @@ body {
   background: #00B894;
 }
 
+.btn-download.download-failed {
+  background: #E17055;
+  color: #fff;
+}
+
 .btn-open {
   background: #f0f0f0;
   color: #555;

@@ -364,37 +364,25 @@ document.addEventListener('DOMContentLoaded', async () => {
       });
     }
 
-    // Open in new tab
-    const openBtn = card.querySelector('.btn-open');
-    if (openBtn) {
-      openBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        chrome.tabs.create({ url: video.url });
-      });
+    // Bind all optional buttons safely
+    const allBtnBindings = [
+      ['.btn-open', 'click', () => chrome.tabs.create({ url: video.url })],
+      ['.btn-copy', 'click', () => {
+        navigator.clipboard.writeText(video.url);
+        const btn = card.querySelector('.btn-copy');
+        if (!btn) return;
+        btn.classList.add('copied');
+        btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 7.5l3 3 5-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+        setTimeout(() => {
+          btn.classList.remove('copied');
+          btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="4.5" y="4.5" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M9.5 4.5V2.5a1 1 0 00-1-1h-6a1 1 0 00-1 1v6a1 1 0 001 1h2" stroke="currentColor" stroke-width="1.2"/></svg>`;
+        }, 1500);
+      }],
+    ];
+    for (const [sel, evt, handler] of allBtnBindings) {
+      const el = card.querySelector(sel);
+      if (el) el.addEventListener(evt, (e) => { e.stopPropagation(); handler(); });
     }
-
-    // Copy URL
-    const copyBtn = card.querySelector('.btn-copy');
-    if (copyBtn) copyBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      navigator.clipboard.writeText(video.url);
-      const btn = card.querySelector('.btn-copy');
-      btn.classList.add('copied');
-      btn.innerHTML = `
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-          <path d="M3 7.5l3 3 5-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      `;
-      setTimeout(() => {
-        btn.classList.remove('copied');
-        btn.innerHTML = `
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-            <rect x="4.5" y="4.5" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
-            <path d="M9.5 4.5V2.5a1 1 0 00-1-1h-6a1 1 0 00-1 1v6a1 1 0 001 1h2" stroke="currentColor" stroke-width="1.2"/>
-          </svg>
-        `;
-      }, 1500);
-    });
 
     return card;
   }

@@ -150,6 +150,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             <path d="M9.5 4.5V2.5a1 1 0 00-1-1h-6a1 1 0 00-1 1v6a1 1 0 001 1h2" stroke="currentColor" stroke-width="1.2"/>
           </svg>
         </button>
+        <button class="btn-action btn-open" title="Open in new tab">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path d="M6 2H3a1 1 0 00-1 1v8a1 1 0 001 1h8a1 1 0 001-1V8M8 2h4v4M7 7l5-5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
       `;
     } else {
       actionsHtml = `
@@ -360,13 +365,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // Open in new tab
-    card.querySelector('.btn-open').addEventListener('click', (e) => {
-      e.stopPropagation();
-      chrome.tabs.create({ url: video.url });
-    });
+    const openBtn = card.querySelector('.btn-open');
+    if (openBtn) {
+      openBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        chrome.tabs.create({ url: video.url });
+      });
+    }
 
     // Copy URL
-    card.querySelector('.btn-copy').addEventListener('click', (e) => {
+    const copyBtn = card.querySelector('.btn-copy');
+    if (copyBtn) copyBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       navigator.clipboard.writeText(video.url);
       const btn = card.querySelector('.btn-copy');

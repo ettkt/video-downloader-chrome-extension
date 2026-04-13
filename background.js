@@ -73,6 +73,7 @@ function addDetection(tabId, url, type, source) {
     timestamp: Date.now(),
     source,
     thumbnail: null,
+    duration: null,
     size: null,
     isStream: isStream(type),
   };
@@ -80,11 +81,12 @@ function addDetection(tabId, url, type, source) {
   tabVideos.set(url, entry);
   updateBadge(tabId);
 
-  // For network-detected videos, ask content script for poster
+  // For network-detected videos, ask content script for poster + duration
   if (source === 'network') {
-    chrome.tabs.sendMessage(tabId, { action: 'getPoster', url }, (response) => {
+    chrome.tabs.sendMessage(tabId, { action: 'getVideoInfo', url }, (response) => {
       if (chrome.runtime.lastError) return;
       if (response?.poster) entry.thumbnail = response.poster;
+      if (response?.duration) entry.duration = response.duration;
     });
   }
 
@@ -122,6 +124,24 @@ function updateBadge(tabId) {
     tabId,
   });
 }
+
+// --- On install/update: inject content script into all existing http tabs ---
+// This fixes the gap when extension reloads and pages already loaded have no content script
+chrome.runtime.onInstalled.addListener(async () => {
+  const tabs = await chrome.tabs.query({});
+  for (const tab of tabs) {
+    if (tab.url?.startsWith('http')) {
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ['content.js'],
+        });
+      } catch {
+        // Some tabs can't be injected (e.g. chrome web store) — skip
+      }
+    }
+  }
+});
 
 // --- Network request interception ---
 chrome.webRequest.onBeforeRequest.addListener(
@@ -202,12 +222,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.action === 'videoFound' && sender.tab) {
-    const { url, type, source, thumbnail } = message;
+    const { url, type, source, thumbnail, duration } = message;
     addDetection(sender.tab.id, url, type, source || 'dom');
-    if (thumbnail) {
-      const tabVideos = detectedVideos.get(sender.tab.id);
-      const entry = tabVideos?.get(url);
-      if (entry && !entry.thumbnail) entry.thumbnail = thumbnail;
+    const tabVideos = detectedVideos.get(sender.tab.id);
+    const entry = tabVideos?.get(url);
+    if (entry) {
+      if (thumbnail && !entry.thumbnail) entry.thumbnail = thumbnail;
+      if (duration && !entry.duration) entry.duration = duration;
     }
     sendResponse({ ok: true });
     return true;

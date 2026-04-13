@@ -4,7 +4,7 @@
   'use strict';
 
   const VIDEO_REGEX =
-    /https?:\/\/[^\s"'<>]+?\.(m3u8|mpd|mp4|webm|flv)(\?[^\s"'<>]*)?/gi;
+    /https?:\/\/[^\s"'<>\)}\]]+?\.(m3u8|mpd|mp4|webm|flv)(\?[^\s"'<>\)}\]]*)?/gi;
 
   const TYPE_MAP = {
     m3u8: 'HLS (M3U8)',
@@ -16,39 +16,71 @@
 
   const reported = new Set();
 
-  // --- Thumbnail helpers ---
+  // --- Thumbnail helper ---
   function getVideoThumbnail(videoEl) {
-    // Only use the actual <video> element's poster — never og:image or random page images
     if (videoEl?.poster) return videoEl.poster;
     return null;
   }
 
-  // Find poster for a video URL by matching it to a <video> element on the page
   function findPosterForUrl(videoUrl) {
     const videos = document.querySelectorAll('video');
     for (const v of videos) {
-      // Check if this video element uses the given URL
       const src = v.src || v.currentSrc || '';
       if (src && videoUrl.includes(src.split('?')[0])) {
         if (v.poster) return v.poster;
       }
-      // Check <source> children
       for (const s of v.querySelectorAll('source')) {
         if (s.src && videoUrl.includes(s.src.split('?')[0])) {
           if (v.poster) return v.poster;
         }
       }
     }
-    // If only one video on page, use its poster
     if (videos.length === 1 && videos[0].poster) {
       return videos[0].poster;
     }
     return null;
   }
 
-  function report(url, type, source, thumbnail) {
-    // Skip obviously bad URLs
+  // --- Duration helper ---
+  function getVideoDuration(videoEl) {
+    if (videoEl && videoEl.duration && isFinite(videoEl.duration) && videoEl.duration > 0) {
+      return videoEl.duration;
+    }
+    return null;
+  }
+
+  function findDurationForUrl(videoUrl) {
+    const videos = document.querySelectorAll('video');
+    for (const v of videos) {
+      const src = v.src || v.currentSrc || '';
+      const matches = src && videoUrl.includes(src.split('?')[0]);
+      if (matches) {
+        const dur = getVideoDuration(v);
+        if (dur) return dur;
+      }
+      for (const s of v.querySelectorAll('source')) {
+        if (s.src && videoUrl.includes(s.src.split('?')[0])) {
+          const dur = getVideoDuration(v);
+          if (dur) return dur;
+        }
+      }
+    }
+    // If only one video on page
+    if (videos.length === 1) {
+      return getVideoDuration(videos[0]);
+    }
+    return null;
+  }
+
+  function report(url, type, source, thumbnail, duration) {
     if (!url || url.length < 10 || url.startsWith('blob:') || url.startsWith('data:')) return;
+
+    // Resolve relative URLs to absolute
+    try {
+      url = new URL(url, document.baseURI).href;
+    } catch {
+      return;
+    }
 
     const baseUrl = url.split('?')[0];
     if (reported.has(baseUrl)) return;
@@ -61,15 +93,15 @@
         type,
         source,
         thumbnail: thumbnail || null,
+        duration: duration || null,
       });
     } catch {
-      // Extension context invalidated (e.g. extension reloaded)
+      // Extension context invalidated
     }
   }
 
-  // Respond to messages from background/popup
+  // --- Message handler ---
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    // fetchAndDownload is async — must return true from the listener itself
     if (message.action === 'fetchAndDownload') {
       fetchAndDownload(message.url, message.filename)
         .then(() => sendResponse({ ok: true }))
@@ -77,16 +109,21 @@
       return true;
     }
 
-    // All other handlers are synchronous
     try {
       if (message.action === 'ping') {
         sendResponse({ alive: true });
       } else if (message.action === 'getPoster') {
         sendResponse({ poster: findPosterForUrl(message.url) });
+      } else if (message.action === 'getDuration') {
+        sendResponse({ duration: findDurationForUrl(message.url) });
+      } else if (message.action === 'getVideoInfo') {
+        sendResponse({
+          poster: findPosterForUrl(message.url),
+          duration: findDurationForUrl(message.url),
+        });
       } else if (message.action === 'rescan') {
         reported.clear();
-        scanDomElements();
-        scanPageSource();
+        scanAll();
         sendResponse({ ok: true });
       }
     } catch (e) {
@@ -99,81 +136,123 @@
     return match ? match[1].toLowerCase() : null;
   }
 
-  // --- 1. Scan <video>, <source>, <embed>, <object>, <iframe> elements ---
-  function scanDomElements() {
-    // Video and source elements
-    document.querySelectorAll('video, audio').forEach((el) => {
-      const thumb = getVideoThumbnail(el);
-      const src = el.src || el.currentSrc;
-      if (src) {
-        const ext = getExtension(src);
-        if (ext) report(src, TYPE_MAP[ext], 'dom', thumb);
-      }
+  function tryReport(url, source, videoEl) {
+    if (!url) return;
+    const ext = getExtension(url);
+    if (!ext) return;
+    const thumb = videoEl ? getVideoThumbnail(videoEl) : null;
+    const duration = videoEl ? getVideoDuration(videoEl) : null;
+    report(url, TYPE_MAP[ext], source, thumb, duration);
+  }
 
-      el.querySelectorAll('source').forEach((source) => {
-        if (source.src) {
-          const ext = getExtension(source.src);
-          if (ext) report(source.src, TYPE_MAP[ext], 'dom', thumb);
-        }
+  // ======================
+  // 1. Scan DOM elements
+  // ======================
+  function scanDomElements() {
+    // <video> and <audio> elements + their <source> children
+    document.querySelectorAll('video, audio').forEach((el) => {
+      const src = el.src || el.currentSrc;
+      if (src) tryReport(src, 'dom', el);
+
+      el.querySelectorAll('source').forEach((s) => {
+        if (s.src) tryReport(s.src, 'dom', el);
       });
     });
 
-    // Standalone source elements
+    // Standalone <source> elements
     document.querySelectorAll('source[src]').forEach((el) => {
       const videoParent = el.closest('video');
-      const thumb = getVideoThumbnail(videoParent);
-      const ext = getExtension(el.src);
-      if (ext) report(el.src, TYPE_MAP[ext], 'dom', thumb);
+      tryReport(el.src, 'dom', videoParent);
     });
 
-    // Embed and object
+    // <embed> and <object>
     document.querySelectorAll('embed[src], object[data]').forEach((el) => {
-      const url = el.src || el.getAttribute('data');
-      if (url) {
-        const ext = getExtension(url);
-        if (ext) report(url, TYPE_MAP[ext], 'dom', null);
-      }
+      tryReport(el.src || el.getAttribute('data'), 'dom', null);
+    });
+
+    // <a> tags that link directly to video files
+    document.querySelectorAll('a[href]').forEach((el) => {
+      const href = el.href;
+      if (href) tryReport(href, 'dom', null);
+    });
+
+    // <iframe> src that might be a direct video
+    document.querySelectorAll('iframe[src]').forEach((el) => {
+      tryReport(el.src, 'dom', null);
     });
   }
 
-  // --- 2. Scan inline scripts and page source for video URLs ---
+  // ======================
+  // 2. Scan page source — inline scripts, JSON-LD, meta tags, all attributes
+  // ======================
   function scanPageSource() {
-    const scripts = document.querySelectorAll('script:not([src])');
-    scripts.forEach((script) => {
-      const matches = script.textContent.match(VIDEO_REGEX);
+    // Inline <script> content
+    document.querySelectorAll('script:not([src])').forEach((script) => {
+      const text = script.textContent;
+      if (!text) return;
+      const matches = text.match(VIDEO_REGEX);
       if (matches) {
-        matches.forEach((url) => {
-          const ext = getExtension(url);
-          if (ext) report(url, TYPE_MAP[ext], 'source', null);
-        });
+        matches.forEach((url) => tryReport(url, 'source', null));
       }
     });
 
-    // Also scan data attributes across the page
-    document.querySelectorAll('[data-src], [data-url], [data-video], [data-stream]').forEach((el) => {
-      for (const attr of ['data-src', 'data-url', 'data-video', 'data-stream']) {
-        const val = el.getAttribute(attr);
-        if (val) {
-          const ext = getExtension(val);
-          if (ext) report(val, TYPE_MAP[ext], 'dom', null);
+    // JSON-LD structured data (common on news sites, archive.org, etc.)
+    document.querySelectorAll('script[type="application/ld+json"]').forEach((script) => {
+      try {
+        const text = script.textContent;
+        const matches = text.match(VIDEO_REGEX);
+        if (matches) {
+          matches.forEach((url) => tryReport(url, 'source', null));
         }
+      } catch {}
+    });
+
+    // Meta tags with video URLs
+    document.querySelectorAll('meta[content]').forEach((meta) => {
+      const content = meta.getAttribute('content');
+      if (content) {
+        const ext = getExtension(content);
+        if (ext) tryReport(content, 'meta', null);
       }
     });
+
+    // All data-* attributes across the entire page
+    const dataAttrs = [
+      'data-src', 'data-url', 'data-video', 'data-stream',
+      'data-video-src', 'data-file', 'data-mp4', 'data-webm',
+      'data-hls', 'data-source', 'data-media',
+    ];
+    const selector = dataAttrs.map((a) => `[${a}]`).join(',');
+    document.querySelectorAll(selector).forEach((el) => {
+      for (const attr of dataAttrs) {
+        const val = el.getAttribute(attr);
+        if (val) tryReport(val, 'dom', null);
+      }
+    });
+
+    // Scan the full HTML as a last resort for URLs buried in comments, noscript, etc.
+    try {
+      const html = document.documentElement.outerHTML;
+      const matches = html.match(VIDEO_REGEX);
+      if (matches) {
+        // Deduplicate before reporting
+        const unique = [...new Set(matches)];
+        unique.forEach((url) => tryReport(url, 'source', null));
+      }
+    } catch {}
   }
 
-  // --- 3. Observe DOM mutations for dynamically added elements ---
+  // ======================
+  // 3. Observe DOM mutations
+  // ======================
   function observeDom() {
-    const observer = new MutationObserver((mutations) => {
-      let shouldScan = false;
-      for (const mutation of mutations) {
-        if (mutation.addedNodes.length > 0) {
-          shouldScan = true;
-          break;
-        }
-      }
-      if (shouldScan) {
+    let scanTimeout = null;
+    const observer = new MutationObserver(() => {
+      // Debounce — don't scan on every single mutation
+      if (scanTimeout) clearTimeout(scanTimeout);
+      scanTimeout = setTimeout(() => {
         scanDomElements();
-      }
+      }, 300);
     });
 
     observer.observe(document.documentElement, {
@@ -182,7 +261,15 @@
     });
   }
 
-  // --- Download helper: fetch with page context and trigger save ---
+  // ======================
+  // Combined scan
+  // ======================
+  function scanAll() {
+    scanDomElements();
+    scanPageSource();
+  }
+
+  // --- Download helper ---
   async function fetchAndDownload(url, filename) {
     const response = await fetch(url, { credentials: 'include' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -198,8 +285,7 @@
     setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
   }
 
-  // --- Run scans ---
-  scanDomElements();
-  scanPageSource();
+  // --- Run ---
+  scanAll();
   observeDom();
 })();

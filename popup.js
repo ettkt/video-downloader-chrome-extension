@@ -73,6 +73,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
   }
 
+  function formatDuration(seconds) {
+    if (!seconds || seconds <= 0 || !isFinite(seconds)) return null;
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    return `${m}:${String(s).padStart(2, '0')}`;
+  }
+
   function guessFilename(url, type) {
     try {
       const pathname = new URL(url).pathname;
@@ -90,6 +99,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     const badgeClass = getBadgeClass(video.type);
     const sizeStr = formatSize(video.size);
+    const durationStr = formatDuration(video.duration);
     const isStreamType = video.isStream;
 
     const thumbHtml = video.thumbnail
@@ -100,10 +110,19 @@ document.addEventListener('DOMContentLoaded', async () => {
            </svg>
          </div>`;
 
+    // Overlays on thumbnail
+    let thumbOverlays = '';
+    if (durationStr) {
+      thumbOverlays += `<span class="thumb-duration">${escapeHtml(durationStr)}</span>`;
+    }
+
     // Build meta tags
     let metaHtml = `<span class="source-tag">${escapeHtml(video.source)}</span>`;
     if (sizeStr) {
       metaHtml += `<span class="source-tag size-tag">${escapeHtml(sizeStr)}</span>`;
+    }
+    if (durationStr) {
+      metaHtml += `<span class="source-tag duration-tag">${escapeHtml(durationStr)}</span>`;
     }
     if (isStreamType) {
       metaHtml += `<span class="source-tag stream-tag">STREAM</span>`;
@@ -158,6 +177,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       <div class="card-thumbnail">
         ${thumbHtml}
         <span class="thumb-badge type-badge ${badgeClass}">${escapeHtml(video.type)}</span>
+        ${thumbOverlays}
         ${sizeStr ? `<span class="thumb-size">${escapeHtml(sizeStr)}</span>` : ''}
       </div>
       <div class="card-info">

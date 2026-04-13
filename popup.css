@@ -236,6 +236,12 @@ body {
   font-weight: 600;
 }
 
+.duration-tag {
+  color: #6C5CE7;
+  background: #f0eeff;
+  font-weight: 600;
+}
+
 .stream-tag {
   color: #E17055;
   background: #ffeee8;

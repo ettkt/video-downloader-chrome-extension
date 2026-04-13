@@ -335,6 +335,12 @@ body {
   background: #E17055;
 }
 
+.btn-download-stream:disabled,
+.btn-download:disabled {
+  opacity: 0.9;
+  cursor: default;
+}
+
 .btn-ffmpeg {
   background: #2d3436;
   color: #fff;

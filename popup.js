@@ -8,6 +8,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   const clearBtn = document.getElementById('clearBtn');
   const rescanBtn = document.getElementById('rescanBtn');
 
+  // Reusable SVG icon strings
+  const dlIcon = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v8.5M3.5 6.5L7 10l3.5-3.5M2 12h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  const checkIcon = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 7.5l3 3 5-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) return;
 
@@ -238,128 +242,98 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // --- Event listeners ---
 
-    // Download stream (HLS/DASH)
+    // Download stream (HLS/DASH) — with live progress polling
     const streamDlBtn = card.querySelector('.btn-download-stream');
     if (streamDlBtn) {
       streamDlBtn.addEventListener('click', (e) => {
         e.stopPropagation();
+        streamDlBtn.disabled = true;
         streamDlBtn.classList.add('downloaded');
-        streamDlBtn.innerHTML = `
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-            <path d="M7 1v8.5M3.5 6.5L7 10l3.5-3.5M2 12h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-          Fetching...
-        `;
+        streamDlBtn.innerHTML = dlIcon + ' 0%';
+
+        // Start progress polling
+        const progressInterval = setInterval(() => {
+          chrome.runtime.sendMessage({ action: 'getDownloadProgress', tabId: tab.id }, (prog) => {
+            if (chrome.runtime.lastError || !prog) return;
+            if (prog.state === 'downloading') {
+              const pct = prog.percent || 0;
+              const segInfo = prog.segsTotal ? ` (${prog.segsDone}/${prog.segsTotal})` : '';
+              streamDlBtn.innerHTML = dlIcon + ` ${pct}%${segInfo}`;
+            }
+          });
+        }, 500);
 
         chrome.runtime.sendMessage({
           action: 'downloadStream',
           url: video.url,
           tabId: tab.id,
         }, (resp) => {
+          clearInterval(progressInterval);
           if (resp?.ok) {
-            streamDlBtn.innerHTML = `
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <path d="M3 7.5l3 3 5-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-              Downloading!
-            `;
+            streamDlBtn.innerHTML = checkIcon + ' Done!';
+            setTimeout(() => resetStreamBtn(streamDlBtn), 4000);
           } else {
             streamDlBtn.classList.remove('downloaded');
             streamDlBtn.classList.add('download-failed');
-            streamDlBtn.innerHTML = `
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <path d="M7 1v8.5M3.5 6.5L7 10l3.5-3.5M2 12h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-              Failed
-            `;
+            streamDlBtn.innerHTML = dlIcon + ` Failed`;
+            streamDlBtn.title = resp?.error || 'Download failed';
+            setTimeout(() => resetStreamBtn(streamDlBtn), 5000);
           }
-          setTimeout(() => {
-            streamDlBtn.classList.remove('downloaded', 'download-failed');
-            streamDlBtn.innerHTML = `
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <path d="M7 1v8.5M3.5 6.5L7 10l3.5-3.5M2 12h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-              Download
-            `;
-          }, 4000);
         });
       });
+    }
+
+    function resetStreamBtn(btn) {
+      btn.disabled = false;
+      btn.classList.remove('downloaded', 'download-failed');
+      btn.innerHTML = dlIcon + ' Download';
+      btn.title = 'Download full stream as video file';
     }
 
     // Download (direct files only)
     const dlBtn = card.querySelector('.btn-download');
     if (dlBtn) {
+      const dlLabel = `Download${sizeStr ? ' (' + sizeStr + ')' : ''}`;
       dlBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        const filename = guessFilename(video.url, video.type);
-
+        dlBtn.disabled = true;
         dlBtn.classList.add('downloaded');
-        dlBtn.innerHTML = `
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-            <path d="M7 1v8.5M3.5 6.5L7 10l3.5-3.5M2 12h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-          Starting...
-        `;
+        dlBtn.innerHTML = dlIcon + ' Starting...';
 
         chrome.runtime.sendMessage({
           action: 'downloadVideo',
           url: video.url,
-          filename,
+          filename: guessFilename(video.url, video.type),
           tabId: tab.id,
         }, (resp) => {
           if (resp?.ok) {
-            dlBtn.innerHTML = `
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <path d="M3 7.5l3 3 5-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-              Downloading!
-            `;
+            dlBtn.innerHTML = checkIcon + ' Downloading!';
           } else {
             dlBtn.classList.remove('downloaded');
             dlBtn.classList.add('download-failed');
-            dlBtn.innerHTML = `
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <path d="M6 2H3a1 1 0 00-1 1v8a1 1 0 001 1h8a1 1 0 001-1V8M8 2h4v4M7 7l5-5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-              Opened in tab
-            `;
+            dlBtn.innerHTML = dlIcon + ' Opened in tab';
           }
           setTimeout(() => {
+            dlBtn.disabled = false;
             dlBtn.classList.remove('downloaded', 'download-failed');
-            dlBtn.innerHTML = `
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <path d="M7 1v8.5M3.5 6.5L7 10l3.5-3.5M2 12h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-              Download${sizeStr ? ' (' + sizeStr + ')' : ''}
-            `;
+            dlBtn.innerHTML = dlIcon + ' ' + dlLabel;
           }, 3000);
         });
       });
     }
 
     // Copy FFmpeg command (streams only)
+    const ffmpegIcon = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="1" y="3" width="12" height="9" rx="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M4 6.5h6M4 9h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>`;
     const ffmpegBtn = card.querySelector('.btn-ffmpeg');
     if (ffmpegBtn) {
       ffmpegBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        const cmd = `ffmpeg -i "${video.url}" -c copy output.mp4`;
-        navigator.clipboard.writeText(cmd);
+        navigator.clipboard.writeText(`ffmpeg -i "${video.url}" -c copy output.mp4`);
         ffmpegBtn.classList.add('copied');
-        ffmpegBtn.innerHTML = `
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-            <path d="M3 7.5l3 3 5-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-          Copied!
-        `;
+        ffmpegBtn.innerHTML = checkIcon;
         setTimeout(() => {
           ffmpegBtn.classList.remove('copied');
-          ffmpegBtn.innerHTML = `
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <rect x="1" y="3" width="12" height="9" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
-              <path d="M4 6.5h6M4 9h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-            </svg>
-            Copy FFmpeg
-          `;
+          ffmpegBtn.innerHTML = ffmpegIcon;
         }, 2000);
       });
     }

@@ -235,22 +235,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.action === 'downloadStream') {
-    const tabId = message.tabId;
-    const url = message.url;
-
-    // Delegate HLS download to content script (has page cookies)
-    handleStreamDownload(tabId, url).then((resp) => {
+    handleStreamDownload(message.tabId, message.url).then((resp) => {
       sendResponse(resp);
     });
     return true;
   }
 
-  if (message.action === 'downloadVideo') {
-    const tabId = message.tabId;
-    const url = message.url;
-    const filename = message.filename || undefined;
+  if (message.action === 'getDownloadProgress') {
+    const progress = activeDownloads.get(message.tabId);
+    sendResponse(progress || null);
+    return true;
+  }
 
-    downloadWithFallback(url, filename, tabId)
+  if (message.action === 'downloadVideo') {
+    downloadWithFallback(message.url, message.filename, message.tabId)
       .then(() => sendResponse({ ok: true }))
       .catch(() => sendResponse({ ok: false }));
     return true;
@@ -272,15 +270,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // =============================================
-// DOWNLOAD — 3 strategies, no forbidden headers
+// DOWNLOAD — robust multi-strategy for direct files
 // =============================================
 async function downloadWithFallback(url, filename, tabId) {
-  // Strategy 1: chrome.downloads.download — simplest, works for public/CORS-friendly files
-  const dlId = await tryDownload({ url, filename });
-  if (dlId !== null) return;
+  // Strategy 1: chrome.downloads.download — most reliable, uses Chrome's
+  // own network stack (handles cookies, redirects, large files natively)
+  const dlId = await tryDownload({ url, filename, conflictAction: 'uniquify' });
+  if (dlId !== null) {
+    // Verify download didn't immediately fail
+    const ok = await verifyDownloadStarted(dlId);
+    if (ok) return;
+  }
 
-  // Strategy 2: Content script fetches with page's cookies/session, triggers <a download>
-  // This is the most reliable for auth-gated files (archive.org, CDNs with cookies)
+  // Strategy 2: Content script fetches with page's cookies/session
   try {
     const alive = await pingContentScript(tabId);
     if (alive) {
@@ -292,12 +294,20 @@ async function downloadWithFallback(url, filename, tabId) {
       });
       if (result?.ok) return;
     }
-  } catch {
-    // Content script not available
-  }
+  } catch {}
 
-  // Strategy 3: Open URL in a new tab — user can right-click save
-  chrome.tabs.create({ url, active: false });
+  // Strategy 3: Background fetch → blob → chrome.downloads
+  try {
+    const resp = await fetchWithTimeout(url, 60000);
+    const blob = new Blob([resp]);
+    const blobUrl = URL.createObjectURL(blob);
+    const dlId2 = await tryDownload({ url: blobUrl, filename, conflictAction: 'uniquify' });
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+    if (dlId2 !== null) return;
+  } catch {}
+
+  // Strategy 4: Open in new tab as last resort
+  chrome.tabs.create({ url, active: true });
 }
 
 function tryDownload(options) {
@@ -313,6 +323,23 @@ function tryDownload(options) {
     } catch {
       resolve(null);
     }
+  });
+}
+
+// Check that a download didn't fail within the first 2 seconds
+function verifyDownloadStarted(dlId) {
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      chrome.downloads.search({ id: dlId }, (results) => {
+        if (chrome.runtime.lastError || !results || results.length === 0) {
+          resolve(false);
+          return;
+        }
+        const state = results[0].state;
+        // 'in_progress' or 'complete' = good; 'interrupted' = bad
+        resolve(state !== 'interrupted');
+      });
+    }, 1500);
   });
 }
 
@@ -380,31 +407,205 @@ function pingContentScript(tabId) {
 }
 
 // =============================================
-// STREAM DOWNLOAD — fetch m3u8 segments and stitch
+// STREAM DOWNLOAD — runs entirely in background
+// Fetches m3u8 playlist, resolves segments,
+// downloads with retry+timeout, stitches, saves
 // =============================================
+
+// Active downloads — keyed by tabId so popup can poll progress
+const activeDownloads = new Map();
+
 async function handleStreamDownload(tabId, url) {
-  // Ensure content script is alive
-  let alive = await pingContentScript(tabId);
-  if (!alive) {
-    try {
-      await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
-      // Wait for script to initialize
-      await new Promise((r) => setTimeout(r, 500));
-      alive = await pingContentScript(tabId);
-    } catch {
-      return { ok: false, error: 'Cannot inject content script' };
+  // Prevent double-download of same stream
+  if (activeDownloads.has(tabId)) {
+    const existing = activeDownloads.get(tabId);
+    if (existing.url === url && existing.state === 'downloading') {
+      return { ok: true, message: 'Already downloading' };
     }
   }
 
-  if (!alive) return { ok: false, error: 'Content script not responding' };
+  const progress = { url, state: 'downloading', percent: 0, error: null, segsDone: 0, segsTotal: 0 };
+  activeDownloads.set(tabId, progress);
 
-  return new Promise((resolve) => {
-    chrome.tabs.sendMessage(tabId, { action: 'downloadHlsStream', url }, (resp) => {
-      if (chrome.runtime.lastError) {
-        resolve({ ok: false, error: chrome.runtime.lastError.message });
-      } else {
-        resolve(resp || { ok: false });
+  try {
+    // 1. Fetch and resolve the media playlist (handles master → variant)
+    const { segments, baseUrl } = await resolveHlsSegments(url);
+    if (!segments || segments.length === 0) {
+      throw new Error('No segments found in playlist');
+    }
+
+    progress.segsTotal = segments.length;
+
+    // 2. Download all segments with concurrency pool + retry
+    const CONCURRENCY = 10;
+    const RETRIES = 3;
+    const TIMEOUT_MS = 30000;
+    const chunks = new Array(segments.length);
+    let nextIdx = 0;
+    let failures = 0;
+
+    async function worker() {
+      while (nextIdx < segments.length) {
+        const idx = nextIdx++;
+        const segUrl = segments[idx];
+        let lastErr = null;
+
+        for (let attempt = 0; attempt < RETRIES; attempt++) {
+          try {
+            const buf = await fetchWithTimeout(segUrl, TIMEOUT_MS);
+            chunks[idx] = buf;
+            progress.segsDone++;
+            progress.percent = Math.round((progress.segsDone / progress.segsTotal) * 100);
+            lastErr = null;
+            break;
+          } catch (e) {
+            lastErr = e;
+            // Exponential backoff: 500ms, 1500ms, 3500ms
+            if (attempt < RETRIES - 1) {
+              await new Promise((r) => setTimeout(r, 500 * Math.pow(2, attempt)));
+            }
+          }
+        }
+
+        if (lastErr) {
+          failures++;
+          // Allow up to 5% segment failures — fill with empty buffer
+          if (failures > Math.max(3, segments.length * 0.05)) {
+            throw new Error(`Too many failed segments (${failures}/${segments.length})`);
+          }
+          chunks[idx] = new ArrayBuffer(0);
+          progress.segsDone++;
+          progress.percent = Math.round((progress.segsDone / progress.segsTotal) * 100);
+        }
       }
+    }
+
+    // Launch worker pool
+    const workers = [];
+    for (let i = 0; i < Math.min(CONCURRENCY, segments.length); i++) {
+      workers.push(worker());
+    }
+    await Promise.all(workers);
+
+    // 3. Stitch segments into a single blob and trigger download
+    const blob = new Blob(chunks.filter(Boolean), { type: 'video/mp2t' });
+    const blobUrl = URL.createObjectURL(blob);
+
+    // Guess filename from URL
+    let filename = 'video.ts';
+    try {
+      const pathname = new URL(url).pathname;
+      const parts = pathname.split('/').filter(Boolean);
+      if (parts.length > 0) {
+        const base = parts[parts.length - 1].replace(/\.m3u8.*$/, '');
+        if (base) filename = base + '.ts';
+      }
+    } catch {}
+
+    await new Promise((resolve, reject) => {
+      chrome.downloads.download({ url: blobUrl, filename }, (dlId) => {
+        if (chrome.runtime.lastError || !dlId) {
+          // Fallback: have content script do the <a download> click
+          triggerBlobDownloadInTab(tabId, blobUrl, filename)
+            .then(resolve)
+            .catch(reject);
+        } else {
+          resolve(dlId);
+        }
+      });
+    });
+
+    progress.state = 'done';
+    progress.percent = 100;
+
+    // Clean up after a delay
+    setTimeout(() => {
+      URL.revokeObjectURL(blobUrl);
+      activeDownloads.delete(tabId);
+    }, 30000);
+
+    return { ok: true, segments: segments.length, failures };
+
+  } catch (e) {
+    progress.state = 'error';
+    progress.error = e.message;
+    setTimeout(() => activeDownloads.delete(tabId), 10000);
+    return { ok: false, error: e.message };
+  }
+}
+
+// Fetch with AbortController timeout
+async function fetchWithTimeout(url, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, { signal: controller.signal });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    return await resp.arrayBuffer();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Resolve m3u8 → list of absolute segment URLs
+// Handles master playlists (picks highest bandwidth variant)
+async function resolveHlsSegments(m3u8Url, depth = 0) {
+  if (depth > 5) throw new Error('Too many playlist redirects');
+
+  const resp = await fetchWithTimeout(m3u8Url, 15000);
+  const text = new TextDecoder().decode(resp);
+  const baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf('/') + 1);
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+
+  // Check if this is a master playlist
+  const variants = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].startsWith('#EXT-X-STREAM-INF')) {
+      const bwMatch = lines[i].match(/BANDWIDTH=(\d+)/);
+      const bw = bwMatch ? parseInt(bwMatch[1], 10) : 0;
+      // Find next non-comment line
+      for (let j = i + 1; j < lines.length; j++) {
+        if (!lines[j].startsWith('#')) {
+          variants.push({ url: lines[j], bandwidth: bw });
+          break;
+        }
+      }
+    }
+  }
+
+  if (variants.length > 0) {
+    // Pick highest bandwidth
+    variants.sort((a, b) => b.bandwidth - a.bandwidth);
+    const bestUrl = hlsResolveUrl(variants[0].url, baseUrl, m3u8Url);
+    return resolveHlsSegments(bestUrl, depth + 1);
+  }
+
+  // Media playlist — extract segment URLs
+  const segments = [];
+  for (const line of lines) {
+    if (!line.startsWith('#')) {
+      segments.push(hlsResolveUrl(line, baseUrl, m3u8Url));
+    }
+  }
+
+  return { segments, baseUrl };
+}
+
+function hlsResolveUrl(url, baseUrl, originalUrl) {
+  if (url.startsWith('http://') || url.startsWith('https://')) return url;
+  if (url.startsWith('/')) {
+    try { return new URL(originalUrl).origin + url; } catch {}
+  }
+  return baseUrl + url;
+}
+
+// Ask content script to trigger a blob download via <a> click
+async function triggerBlobDownloadInTab(tabId, blobUrl, filename) {
+  const alive = await pingContentScript(tabId);
+  if (!alive) return;
+  return new Promise((resolve) => {
+    chrome.tabs.sendMessage(tabId, { action: 'triggerDownload', blobUrl, filename }, () => {
+      resolve();
     });
   });
 }

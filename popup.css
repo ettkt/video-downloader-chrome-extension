@@ -230,6 +230,31 @@ body {
   border-radius: 4px;
 }
 
+.size-tag {
+  color: #0984E3;
+  background: #e8f4fd;
+  font-weight: 600;
+}
+
+.stream-tag {
+  color: #E17055;
+  background: #ffeee8;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.thumb-size {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
 /* Card actions row */
 .card-actions {
   display: flex;
@@ -290,6 +315,19 @@ body {
 .btn-copy:hover {
   background: #e4e4e4;
   color: #333;
+}
+
+.btn-ffmpeg {
+  background: #2d3436;
+  color: #fff;
+}
+
+.btn-ffmpeg:hover {
+  background: #1a1a2e;
+}
+
+.btn-ffmpeg.copied {
+  background: #00B894;
 }
 
 .btn-copy.copied {

@@ -13,20 +13,46 @@ const VIDEO_PATTERNS = [
   { regex: /\.webm(\?[^#]*)?(#.*)?$/i, type: 'WebM' },
   // FLV
   { regex: /\.flv(\?[^#]*)?(#.*)?$/i, type: 'FLV' },
-  // TS segments (HLS chunks)
-  { regex: /\.ts(\?[^#]*)?(#.*)?$/i, type: 'TS Segment' },
 ];
 
-// Store detected videos per tab: { tabId: Map<url, {url, type, timestamp, source}> }
+// URLs to ignore — common false positives
+const IGNORE_PATTERNS = [
+  /google-analytics\.com/i,
+  /doubleclick\.net/i,
+  /facebook\.com\/tr/i,
+  /\.gif(\?|$)/i,
+  /\.png(\?|$)/i,
+  /\.jpg(\?|$)/i,
+  /\.jpeg(\?|$)/i,
+  /\.svg(\?|$)/i,
+  /\.woff/i,
+  /\.css(\?|$)/i,
+  /beacon/i,
+  /pixel/i,
+  /tracker/i,
+];
+
+// Store detected videos per tab: { tabId: Map<url, {url, type, timestamp, source, thumbnail, size, isStream}> }
 const detectedVideos = new Map();
+// Store the page URL for each tab (used as referrer for downloads)
+const tabPageUrls = new Map();
+
+function shouldIgnore(url) {
+  return IGNORE_PATTERNS.some((p) => p.test(url));
+}
 
 function classifyUrl(url) {
+  if (shouldIgnore(url)) return null;
   for (const pattern of VIDEO_PATTERNS) {
     if (pattern.regex.test(url)) {
       return pattern.type;
     }
   }
   return null;
+}
+
+function isStream(type) {
+  return type === 'HLS (M3U8)' || type === 'DASH (MPD)';
 }
 
 function addDetection(tabId, url, type, source) {
@@ -36,41 +62,57 @@ function addDetection(tabId, url, type, source) {
 
   const tabVideos = detectedVideos.get(tabId);
 
-  // Skip tiny TS segments if we already have the parent M3U8
-  if (type === 'TS Segment') {
-    const hasParentStream = [...tabVideos.values()].some(
-      (v) => v.type === 'HLS (M3U8)'
-    );
-    if (hasParentStream) return;
-  }
-
-  // Deduplicate by URL (strip trivial query param differences)
+  // Deduplicate by base URL
   const baseUrl = url.split('?')[0];
   const isDuplicate = [...tabVideos.keys()].some(
     (existing) => existing.split('?')[0] === baseUrl
   );
   if (isDuplicate) return;
 
-  tabVideos.set(url, {
+  const entry = {
     url,
     type,
     timestamp: Date.now(),
     source,
     thumbnail: null,
-  });
+    size: null,       // file size in bytes (null = unknown)
+    isStream: isStream(type),
+  };
 
+  tabVideos.set(url, entry);
   updateBadge(tabId);
 
-  // For network-detected videos, ask the content script for the poster
+  // For network-detected videos, ask content script for poster
   if (source === 'network') {
     chrome.tabs.sendMessage(tabId, { action: 'getPoster', url }, (response) => {
-      if (chrome.runtime.lastError) return; // content script not ready
-      if (response?.poster) {
-        const entry = tabVideos.get(url);
-        if (entry) entry.thumbnail = response.poster;
-      }
+      if (chrome.runtime.lastError) return;
+      if (response?.poster) entry.thumbnail = response.poster;
     });
   }
+
+  // For direct files, probe file size via HEAD request
+  if (!entry.isStream) {
+    probeFileSize(url).then((size) => {
+      if (size !== null) entry.size = size;
+    });
+  }
+}
+
+// HEAD request to get Content-Length without downloading the file
+async function probeFileSize(url) {
+  try {
+    const resp = await fetch(url, { method: 'HEAD', mode: 'no-cors' });
+    const cl = resp.headers.get('content-length');
+    if (cl) return parseInt(cl, 10);
+
+    // Some servers don't support HEAD, try range request for size
+    const cr = resp.headers.get('content-range');
+    if (cr) {
+      const match = cr.match(/\/(\d+)$/);
+      if (match) return parseInt(match[1], 10);
+    }
+  } catch {}
+  return null;
 }
 
 function updateBadge(tabId) {
@@ -90,7 +132,7 @@ function updateBadge(tabId) {
 // --- Network request interception ---
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
-    if (details.tabId < 0) return; // ignore service worker requests
+    if (details.tabId < 0) return;
 
     const type = classifyUrl(details.url);
     if (type) {
@@ -100,14 +142,13 @@ chrome.webRequest.onBeforeRequest.addListener(
   { urls: ['<all_urls>'] }
 );
 
-// Also check response headers for content-type
+// Also check response headers for content-type + capture size
 chrome.webRequest.onHeadersReceived.addListener(
   (details) => {
     if (details.tabId < 0) return;
 
-    const contentType = details.responseHeaders?.find(
-      (h) => h.name.toLowerCase() === 'content-type'
-    );
+    const headers = details.responseHeaders || [];
+    const contentType = headers.find((h) => h.name.toLowerCase() === 'content-type');
     if (!contentType?.value) return;
 
     const ct = contentType.value.toLowerCase();
@@ -125,22 +166,36 @@ chrome.webRequest.onHeadersReceived.addListener(
 
     if (type) {
       addDetection(details.tabId, details.url, type, 'network');
+
+      // Try to grab Content-Length from this response
+      const cl = headers.find((h) => h.name.toLowerCase() === 'content-length');
+      if (cl?.value) {
+        const tabVideos = detectedVideos.get(details.tabId);
+        const entry = tabVideos?.get(details.url);
+        if (entry && !entry.size && !entry.isStream) {
+          entry.size = parseInt(cl.value, 10);
+        }
+      }
     }
   },
   { urls: ['<all_urls>'] },
   ['responseHeaders']
 );
 
-// --- Clean up when tab is closed or navigated ---
-chrome.tabs.onRemoved.addListener((tabId) => {
-  detectedVideos.delete(tabId);
-});
-
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+// --- Track page URLs for referrer ---
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status === 'loading') {
     detectedVideos.delete(tabId);
     updateBadge(tabId);
   }
+  if (tab.url) {
+    tabPageUrls.set(tabId, tab.url);
+  }
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  detectedVideos.delete(tabId);
+  tabPageUrls.delete(tabId);
 });
 
 // --- Messaging ---
@@ -156,22 +211,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'videoFound' && sender.tab) {
     const { url, type, source, thumbnail } = message;
     addDetection(sender.tab.id, url, type, source || 'dom');
-    // Store thumbnail if provided
     if (thumbnail) {
       const tabVideos = detectedVideos.get(sender.tab.id);
       const entry = tabVideos?.get(url);
-      if (entry && !entry.thumbnail) {
-        entry.thumbnail = thumbnail;
-      }
+      if (entry && !entry.thumbnail) entry.thumbnail = thumbnail;
     }
     sendResponse({ ok: true });
     return true;
   }
 
   if (message.action === 'downloadVideo') {
+    const tabId = message.tabId;
+    const pageUrl = tabPageUrls.get(tabId) || '';
+
     chrome.downloads.download({
       url: message.url,
       filename: message.filename || undefined,
+      // Pass the page URL as referrer — many CDNs require this
+      headers: pageUrl ? [{ name: 'Referer', value: pageUrl }] : undefined,
     });
     sendResponse({ ok: true });
     return true;

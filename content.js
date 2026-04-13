@@ -47,30 +47,42 @@
   }
 
   function report(url, type, source, thumbnail) {
+    // Skip obviously bad URLs
+    if (!url || url.length < 10 || url.startsWith('blob:') || url.startsWith('data:')) return;
+
     const baseUrl = url.split('?')[0];
     if (reported.has(baseUrl)) return;
     reported.add(baseUrl);
 
-    chrome.runtime.sendMessage({
-      action: 'videoFound',
-      url,
-      type,
-      source,
-      thumbnail: thumbnail || null,
-    });
+    try {
+      chrome.runtime.sendMessage({
+        action: 'videoFound',
+        url,
+        type,
+        source,
+        thumbnail: thumbnail || null,
+      });
+    } catch {
+      // Extension context invalidated (e.g. extension reloaded)
+    }
   }
 
   // Respond to messages from background/popup
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.action === 'getPoster') {
-      const poster = findPosterForUrl(message.url);
-      sendResponse({ poster });
-    }
-    if (message.action === 'rescan') {
-      // Re-run all scans without reloading the page
-      scanDomElements();
-      scanPageSource();
-      sendResponse({ ok: true });
+    try {
+      if (message.action === 'getPoster') {
+        const poster = findPosterForUrl(message.url);
+        sendResponse({ poster });
+      }
+      if (message.action === 'rescan') {
+        // Clear reported set so we can re-detect everything
+        reported.clear();
+        scanDomElements();
+        scanPageSource();
+        sendResponse({ ok: true });
+      }
+    } catch (e) {
+      sendResponse({ error: e.message });
     }
   });
 

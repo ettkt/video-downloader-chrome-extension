@@ -16,7 +16,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     pageUrlEl.textContent = url.hostname + url.pathname;
     pageUrlEl.title = tab.url;
   } catch {
-    pageUrlEl.textContent = tab.url;
+    pageUrlEl.textContent = tab.url || '';
   }
 
   function loadVideos() {
@@ -40,17 +40,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     videoListEl.style.display = 'block';
     videoCountEl.textContent = `${videos.length} video${videos.length !== 1 ? 's' : ''}`;
 
+    // Sort: streams first (M3U8 > DASH), then direct files by size desc
     videos.sort((a, b) => {
       const priority = { 'HLS (M3U8)': 0, 'DASH (MPD)': 1, MP4: 2, WebM: 3, FLV: 4 };
       const pa = priority[a.type] ?? 5;
       const pb = priority[b.type] ?? 5;
       if (pa !== pb) return pa - pb;
+      // Larger files first within same type
+      if (a.size && b.size) return b.size - a.size;
       return b.timestamp - a.timestamp;
     });
 
     videos.forEach((video) => {
-      const card = createVideoCard(video);
-      videoListEl.appendChild(card);
+      videoListEl.appendChild(createVideoCard(video));
     });
   }
 
@@ -60,8 +62,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (type.includes('MP4')) return 'mp4';
     if (type.includes('WebM')) return 'webm';
     if (type.includes('FLV')) return 'flv';
-    if (type.includes('TS')) return 'ts';
     return 'other';
+  }
+
+  function formatSize(bytes) {
+    if (!bytes || bytes <= 0) return null;
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
   }
 
   function guessFilename(url, type) {
@@ -71,7 +80,6 @@ document.addEventListener('DOMContentLoaded', async () => {
       const last = segments[segments.length - 1];
       if (last && last.includes('.')) return decodeURIComponent(last);
     } catch {}
-
     const ext = { 'HLS (M3U8)': 'm3u8', 'DASH (MPD)': 'mpd', MP4: 'mp4', WebM: 'webm', FLV: 'flv' };
     return `video.${ext[type] || 'mp4'}`;
   }
@@ -81,6 +89,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     card.className = 'video-card';
 
     const badgeClass = getBadgeClass(video.type);
+    const sizeStr = formatSize(video.size);
+    const isStreamType = video.isStream;
+
     const thumbHtml = video.thumbnail
       ? `<img src="${escapeAttr(video.thumbnail)}" alt="" loading="lazy">`
       : `<div class="thumb-placeholder">
@@ -89,30 +100,25 @@ document.addEventListener('DOMContentLoaded', async () => {
            </svg>
          </div>`;
 
-    card.innerHTML = `
-      <div class="card-thumbnail">
-        ${thumbHtml}
-        <span class="thumb-badge type-badge ${badgeClass}">${escapeHtml(video.type)}</span>
-      </div>
-      <div class="card-info">
-        <div class="video-url" title="${escapeAttr(video.url)}">${escapeHtml(video.url)}</div>
-        <div class="card-meta">
-          <span class="source-tag">${escapeHtml(video.source)}</span>
-          <span class="source-tag">${escapeHtml(guessFilename(video.url, video.type))}</span>
-        </div>
-      </div>
-      <div class="card-actions">
-        <button class="btn-action btn-download" title="Download video">
+    // Build meta tags
+    let metaHtml = `<span class="source-tag">${escapeHtml(video.source)}</span>`;
+    if (sizeStr) {
+      metaHtml += `<span class="source-tag size-tag">${escapeHtml(sizeStr)}</span>`;
+    }
+    if (isStreamType) {
+      metaHtml += `<span class="source-tag stream-tag">STREAM</span>`;
+    }
+
+    // Different actions for streams vs direct files
+    let actionsHtml;
+    if (isStreamType) {
+      actionsHtml = `
+        <button class="btn-action btn-ffmpeg" title="Copy ffmpeg command to download this stream">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-            <path d="M7 1v8.5M3.5 6.5L7 10l3.5-3.5M2 12h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+            <rect x="1" y="3" width="12" height="9" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
+            <path d="M4 6.5h6M4 9h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
           </svg>
-          Download
-        </button>
-        <button class="btn-action btn-open" title="Open in new tab">
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-            <path d="M6 2H3a1 1 0 00-1 1v8a1 1 0 001 1h8a1 1 0 001-1V8M8 2h4v4M7 7l5-5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-          Open
+          Copy FFmpeg
         </button>
         <button class="btn-action btn-copy" title="Copy URL">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
@@ -120,11 +126,49 @@ document.addEventListener('DOMContentLoaded', async () => {
             <path d="M9.5 4.5V2.5a1 1 0 00-1-1h-6a1 1 0 00-1 1v6a1 1 0 001 1h2" stroke="currentColor" stroke-width="1.2"/>
           </svg>
         </button>
+        <button class="btn-action btn-open" title="Open in new tab">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path d="M6 2H3a1 1 0 00-1 1v8a1 1 0 001 1h8a1 1 0 001-1V8M8 2h4v4M7 7l5-5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      `;
+    } else {
+      actionsHtml = `
+        <button class="btn-action btn-download" title="Download file">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path d="M7 1v8.5M3.5 6.5L7 10l3.5-3.5M2 12h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Download${sizeStr ? ' (' + sizeStr + ')' : ''}
+        </button>
+        <button class="btn-action btn-open" title="Open in new tab">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path d="M6 2H3a1 1 0 00-1 1v8a1 1 0 001 1h8a1 1 0 001-1V8M8 2h4v4M7 7l5-5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+        <button class="btn-action btn-copy" title="Copy URL">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <rect x="4.5" y="4.5" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
+            <path d="M9.5 4.5V2.5a1 1 0 00-1-1h-6a1 1 0 00-1 1v6a1 1 0 001 1h2" stroke="currentColor" stroke-width="1.2"/>
+          </svg>
+        </button>
+      `;
+    }
+
+    card.innerHTML = `
+      <div class="card-thumbnail">
+        ${thumbHtml}
+        <span class="thumb-badge type-badge ${badgeClass}">${escapeHtml(video.type)}</span>
+        ${sizeStr ? `<span class="thumb-size">${escapeHtml(sizeStr)}</span>` : ''}
       </div>
+      <div class="card-info">
+        <div class="video-url" title="${escapeAttr(video.url)}">${escapeHtml(video.url)}</div>
+        <div class="card-meta">${metaHtml}</div>
+      </div>
+      <div class="card-actions">${actionsHtml}</div>
     `;
 
     // --- Thumbnail: try to generate frame for direct video URLs ---
-    if (!video.thumbnail && (video.type === 'MP4' || video.type === 'WebM')) {
+    if (!video.thumbnail && !isStreamType) {
       generateFrameThumbnail(video.url).then((dataUrl) => {
         if (dataUrl) {
           const thumbContainer = card.querySelector('.card-thumbnail');
@@ -139,29 +183,65 @@ document.addEventListener('DOMContentLoaded', async () => {
       });
     }
 
-    // Download
-    card.querySelector('.btn-download').addEventListener('click', (e) => {
-      e.stopPropagation();
-      const filename = guessFilename(video.url, video.type);
-      chrome.runtime.sendMessage({ action: 'downloadVideo', url: video.url, filename });
-      const btn = card.querySelector('.btn-download');
-      btn.classList.add('downloaded');
-      btn.innerHTML = `
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-          <path d="M3 7.5l3 3 5-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-        Downloaded
-      `;
-      setTimeout(() => {
-        btn.classList.remove('downloaded');
-        btn.innerHTML = `
+    // --- Event listeners ---
+
+    // Download (direct files only)
+    const dlBtn = card.querySelector('.btn-download');
+    if (dlBtn) {
+      dlBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const filename = guessFilename(video.url, video.type);
+        chrome.runtime.sendMessage({
+          action: 'downloadVideo',
+          url: video.url,
+          filename,
+          tabId: tab.id,
+        });
+        dlBtn.classList.add('downloaded');
+        dlBtn.innerHTML = `
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-            <path d="M7 1v8.5M3.5 6.5L7 10l3.5-3.5M2 12h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M3 7.5l3 3 5-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
-          Download
+          Downloading...
         `;
-      }, 2000);
-    });
+        setTimeout(() => {
+          dlBtn.classList.remove('downloaded');
+          dlBtn.innerHTML = `
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M7 1v8.5M3.5 6.5L7 10l3.5-3.5M2 12h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            Download${sizeStr ? ' (' + sizeStr + ')' : ''}
+          `;
+        }, 3000);
+      });
+    }
+
+    // Copy FFmpeg command (streams only)
+    const ffmpegBtn = card.querySelector('.btn-ffmpeg');
+    if (ffmpegBtn) {
+      ffmpegBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const cmd = `ffmpeg -i "${video.url}" -c copy output.mp4`;
+        navigator.clipboard.writeText(cmd);
+        ffmpegBtn.classList.add('copied');
+        ffmpegBtn.innerHTML = `
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path d="M3 7.5l3 3 5-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Copied!
+        `;
+        setTimeout(() => {
+          ffmpegBtn.classList.remove('copied');
+          ffmpegBtn.innerHTML = `
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <rect x="1" y="3" width="12" height="9" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
+              <path d="M4 6.5h6M4 9h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+            </svg>
+            Copy FFmpeg
+          `;
+        }, 2000);
+      });
+    }
 
     // Open in new tab
     card.querySelector('.btn-open').addEventListener('click', (e) => {
@@ -194,7 +274,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     return card;
   }
 
-  // Generate a thumbnail by loading a video frame in a hidden <video> element
   function generateFrameThumbnail(url) {
     return new Promise((resolve) => {
       const video = document.createElement('video');
@@ -208,7 +287,6 @@ document.addEventListener('DOMContentLoaded', async () => {
       }, 4000);
 
       video.addEventListener('loadeddata', () => {
-        // Seek to 1 second or 10% of duration, whichever is smaller
         video.currentTime = Math.min(1, video.duration * 0.1);
       });
 
@@ -248,11 +326,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
-  // Rescan — ask content script to re-scan DOM + source, then reload list
+  // Rescan
   rescanBtn.addEventListener('click', () => {
     rescanBtn.classList.add('spinning');
     chrome.tabs.sendMessage(tab.id, { action: 'rescan' }, () => {
-      // Small delay to let new detections arrive at background
       setTimeout(() => {
         loadVideos();
         rescanBtn.classList.remove('spinning');
@@ -260,6 +337,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   });
 
+  // Clear
   clearBtn.addEventListener('click', () => {
     chrome.runtime.sendMessage({ action: 'clearVideos', tabId: tab.id }, () => {
       renderVideos([]);

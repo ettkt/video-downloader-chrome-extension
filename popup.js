@@ -118,11 +118,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Build meta tags
     let metaHtml = `<span class="source-tag">${escapeHtml(video.source)}</span>`;
-    if (sizeStr) {
-      metaHtml += `<span class="source-tag size-tag">${escapeHtml(sizeStr)}</span>`;
-    }
     if (durationStr) {
       metaHtml += `<span class="source-tag duration-tag">${escapeHtml(durationStr)}</span>`;
+    }
+    if (sizeStr) {
+      metaHtml += `<span class="source-tag size-tag">${escapeHtml(sizeStr)}</span>`;
     }
     if (isStreamType) {
       metaHtml += `<span class="source-tag stream-tag">STREAM</span>`;
@@ -178,7 +178,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         ${thumbHtml}
         <span class="thumb-badge type-badge ${badgeClass}">${escapeHtml(video.type)}</span>
         ${thumbOverlays}
-        ${sizeStr ? `<span class="thumb-size">${escapeHtml(sizeStr)}</span>` : ''}
       </div>
       <div class="card-info">
         <div class="video-url" title="${escapeAttr(video.url)}">${escapeHtml(video.url)}</div>

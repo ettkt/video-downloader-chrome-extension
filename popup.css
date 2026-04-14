@@ -89,7 +89,7 @@ body {
 
 /* === Download Queue === */
 .download-queue {
-  padding: 8px;
+  padding: 12px 10px 14px;
   border-bottom: 2px solid #6C5CE7;
   background: #f8f7ff;
 }
@@ -100,14 +100,14 @@ body {
   letter-spacing: 0.8px;
   text-transform: uppercase;
   color: #6C5CE7;
-  padding: 2px 4px 6px;
+  padding: 0 4px 10px;
 }
 
 .dl-item {
   border: 1px solid transparent;
   border-radius: 12px;
   overflow: hidden;
-  margin-bottom: 6px;
+  margin-bottom: 10px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
   transition: box-shadow 0.2s ease, border-color 0.2s ease;
 }
@@ -124,7 +124,7 @@ body {
 /* Hero zone — dark area like video card thumbnails */
 .dl-hero {
   background: linear-gradient(135deg, #1a1a2e 0%, #2d2d5e 100%);
-  padding: 12px 14px;
+  padding: 14px 16px;
   position: relative;
 }
 
@@ -136,7 +136,7 @@ body {
 .dl-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 
 .dl-icon {
@@ -242,7 +242,7 @@ body {
 
 /* Footer zone — light strip below hero */
 .dl-footer {
-  padding: 8px 12px;
+  padding: 10px 14px;
   background: #fafafa;
   border-top: 1px solid #f0f0f0;
   display: flex;

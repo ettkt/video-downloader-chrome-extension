@@ -87,6 +87,100 @@ body {
   to { transform: rotate(360deg); }
 }
 
+/* === Download Queue === */
+.download-queue {
+  padding: 8px;
+  border-bottom: 2px solid #6C5CE7;
+  background: #f8f7ff;
+}
+
+.dl-item {
+  background: #fff;
+  border: 1px solid #eee;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dl-item:last-child { margin-bottom: 0; }
+
+.dl-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.dl-filename {
+  font-size: 12px;
+  font-weight: 600;
+  color: #1a1a2e;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 240px;
+}
+
+.dl-status {
+  font-size: 11px;
+  color: #666;
+  white-space: nowrap;
+}
+
+.dl-status.done { color: #00B894; font-weight: 600; }
+.dl-status.error { color: #E17055; }
+
+.dl-progress-bar {
+  height: 4px;
+  background: #eee;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.dl-progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s ease;
+  width: 0%;
+}
+
+.dl-progress-fill.downloading { background: #0984E3; }
+.dl-progress-fill.saving { background: #6C5CE7; animation: pulse 1s ease infinite; }
+.dl-progress-fill.done { background: #00B894; }
+.dl-progress-fill.error { background: #E17055; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.dl-actions {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+.dl-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.dl-cancel { background: #fee; color: #E17055; }
+.dl-cancel:hover { background: #E17055; color: #fff; }
+.dl-remove { background: #f0f0f0; color: #999; }
+.dl-remove:hover { background: #ddd; color: #666; }
+.dl-retry { background: #e8f4fd; color: #0984E3; }
+.dl-retry:hover { background: #0984E3; color: #fff; }
+
 /* === Video List === */
 .video-list {
   flex: 1;

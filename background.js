@@ -69,9 +69,6 @@ function addDetection(tabId, url, type, source) {
 function updateBadge(tabId) {
   const tabVideos = detectedVideos.get(tabId);
   const count = tabVideos ? tabVideos.size : 0;
-  // Don't overwrite a download-in-progress badge
-  const dl = [...activeDownloads.values()].find((d) => d.tabId === tabId && d.state === 'downloading');
-  if (dl) return;
   chrome.action.setBadgeText({ text: count > 0 ? String(count) : '', tabId });
   chrome.action.setBadgeBackgroundColor({ color: '#6C5CE7', tabId });
 }
@@ -132,12 +129,6 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   detectedVideos.delete(tabId);
-  // Clean up downloads for this tab
-  for (const [url, dl] of activeDownloads) {
-    if (dl.tabId === tabId && dl.state !== 'downloading') {
-      activeDownloads.delete(url);
-    }
-  }
 });
 
 // =============================================
@@ -166,30 +157,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     case 'downloadStream': {
-      handleStreamDownload(message.tabId, message.url).then(sendResponse);
+      handleStreamDownload(message.url, message.filename).then(sendResponse);
       return true;
     }
 
-    case 'getDownloadProgress': {
-      // Return progress for a specific URL
-      if (message.url) {
-        sendResponse(activeDownloads.get(message.url) || null);
-      } else {
-        // Return all active downloads (for popup to match against cards)
-        const all = {};
-        for (const [url, dl] of activeDownloads) {
-          all[url] = dl;
-        }
-        sendResponse(all);
-      }
+    case 'getAllDownloads': {
+      // Return all downloads from persistent storage
+      chrome.storage.local.get('downloads', (data) => {
+        sendResponse(data.downloads || {});
+      });
       return true;
     }
 
     case 'cancelDownload': {
-      const dl = activeDownloads.get(message.url);
-      if (dl && dl.state === 'downloading') {
-        dl.state = 'cancelled';
-      }
+      cancelDownload(message.url);
+      sendResponse({ ok: true });
+      return true;
+    }
+
+    case 'removeDownload': {
+      removeDownload(message.url);
       sendResponse({ ok: true });
       return true;
     }
@@ -219,14 +206,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // DIRECT FILE DOWNLOAD — 4-strategy fallback
 // =============================================
 async function downloadWithFallback(url, filename, tabId) {
-  // Strategy 1: chrome.downloads (Chrome's native downloader)
   const dlId = await tryDownload({ url, filename, conflictAction: 'uniquify' });
   if (dlId !== null) {
     const ok = await verifyDownloadStarted(dlId);
     if (ok) return;
   }
 
-  // Strategy 2: Content script fetch + blob download
   try {
     const alive = await pingContentScript(tabId);
     if (alive) {
@@ -239,7 +224,6 @@ async function downloadWithFallback(url, filename, tabId) {
     }
   } catch {}
 
-  // Strategy 3: Background fetch → blob → chrome.downloads
   try {
     const buf = await fetchWithTimeout(url, 60000);
     const blob = new Blob([buf]);
@@ -249,7 +233,6 @@ async function downloadWithFallback(url, filename, tabId) {
     if (dlId2 !== null) return;
   } catch {}
 
-  // Strategy 4: Open in new tab
   chrome.tabs.create({ url, active: true });
 }
 
@@ -311,12 +294,107 @@ function pingContentScript(tabId) {
 }
 
 // =============================================
-// STREAM DOWNLOAD — keyed by URL, supports
-// multiple concurrent downloads across any tabs
+// IndexedDB — persistent segment storage
 // =============================================
 
-// Keyed by stream URL (not tabId!) — each download is independent
-const activeDownloads = new Map(); // url → { tabId, url, state, percent, segsDone, segsTotal, error }
+function openSegmentDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('hls-segments', 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains('chunks')) {
+        db.createObjectStore('chunks');
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function storeSegment(downloadId, index, data) {
+  const db = await openSegmentDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('chunks', 'readwrite');
+    tx.objectStore('chunks').put(data, `${downloadId}:${index}`);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
+  });
+}
+
+async function loadSegment(downloadId, index) {
+  const db = await openSegmentDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('chunks', 'readonly');
+    const req = tx.objectStore('chunks').get(`${downloadId}:${index}`);
+    req.onsuccess = () => { db.close(); resolve(req.result); };
+    req.onerror = () => { db.close(); reject(req.error); };
+  });
+}
+
+async function deleteSegments(downloadId) {
+  const db = await openSegmentDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('chunks', 'readwrite');
+    const store = tx.objectStore('chunks');
+    const req = store.openCursor();
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (cursor) {
+        if (cursor.key.startsWith(downloadId + ':')) cursor.delete();
+        cursor.continue();
+      }
+    };
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
+  });
+}
+
+// =============================================
+// PERSISTENT DOWNLOAD STATE — chrome.storage.local
+// =============================================
+
+// In-memory mirror for fast access (synced to storage)
+const activeDownloads = new Map();
+// Set of currently running download URLs (prevents double-starts on SW resume)
+const runningUrls = new Set();
+
+async function loadDownloads() {
+  const data = await chrome.storage.local.get('downloads');
+  const downloads = data.downloads || {};
+  for (const [url, dl] of Object.entries(downloads)) {
+    activeDownloads.set(url, dl);
+  }
+  return downloads;
+}
+
+async function persistDownloads() {
+  const obj = {};
+  for (const [url, dl] of activeDownloads) {
+    obj[url] = dl;
+  }
+  await chrome.storage.local.set({ downloads: obj });
+}
+
+async function updateDownload(url, updates) {
+  const dl = activeDownloads.get(url);
+  if (!dl) return;
+  Object.assign(dl, updates);
+  await persistDownloads();
+}
+
+async function removeDownload(url) {
+  activeDownloads.delete(url);
+  await persistDownloads();
+  await deleteSegments(url);
+}
+
+async function cancelDownload(url) {
+  const dl = activeDownloads.get(url);
+  if (dl) {
+    dl.state = 'cancelled';
+    await persistDownloads();
+  }
+}
 
 // --- Service worker keepalive ---
 const KEEPALIVE_ALARM = 'download-keepalive';
@@ -324,7 +402,6 @@ const KEEPALIVE_ALARM = 'download-keepalive';
 function refreshKeepalive() {
   const hasActive = [...activeDownloads.values()].some((d) => d.state === 'downloading');
   if (hasActive) {
-    // Use minimum alarm period (Chrome enforces 1-minute minimum for MV3)
     chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.5 });
   } else {
     chrome.alarms.clear(KEEPALIVE_ALARM);
@@ -333,135 +410,266 @@ function refreshKeepalive() {
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === KEEPALIVE_ALARM) {
-    refreshKeepalive(); // stop alarm if no active downloads remain
+    refreshKeepalive();
   }
 });
 
-// Port-based keepalive: popup connects to keep service worker alive during downloads
+// Port-based keepalive
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name === 'keepalive') {
-    // Port keeps the service worker alive while popup is open
-    port.onDisconnect.addListener(() => {
-      // Popup closed — alarm-based keepalive takes over
-    });
+    port.onDisconnect.addListener(() => {});
   }
 });
 
-async function handleStreamDownload(tabId, url) {
-  // Prevent double-download of the exact same URL
+// =============================================
+// HLS DOWNLOAD ENGINE — persistent, resumable
+// =============================================
+
+async function handleStreamDownload(url, filename) {
   const existing = activeDownloads.get(url);
-  if (existing) {
-    if (existing.state === 'downloading') {
-      return { ok: true, message: 'Already downloading' };
-    }
-    // Previous attempt done/errored — allow retry
+  if (existing && existing.state === 'downloading' && runningUrls.has(url)) {
+    return { ok: true, message: 'Already downloading' };
   }
 
-  const progress = { tabId, url, state: 'downloading', percent: 0, error: null, segsDone: 0, segsTotal: 0 };
-  activeDownloads.set(url, progress);
+  // Generate a short ID for IndexedDB keys
+  const downloadId = url;
+
+  // Resolve playlist
+  console.log('[hls] Resolving playlist:', url);
+  let segments;
+  try {
+    const result = await resolveHlsSegments(url);
+    segments = result.segments;
+    if (!segments?.length) throw new Error('No segments found');
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+  console.log('[hls] Found', segments.length, 'segments');
+
+  if (!filename) {
+    try {
+      const base = new URL(url).pathname.split('/').filter(Boolean).pop()?.replace(/\.m3u8.*$/, '');
+      if (base) filename = base + '.ts';
+    } catch {}
+    if (!filename) filename = 'video.ts';
+  }
+
+  // Create persistent download entry
+  const dl = {
+    url,
+    filename,
+    state: 'downloading',
+    percent: 0,
+    segsDone: 0,
+    segsTotal: segments.length,
+    segments,
+    completedSegs: existing?.completedSegs || [],
+    error: null,
+    startedAt: Date.now(),
+  };
+  activeDownloads.set(url, dl);
+  await persistDownloads();
   refreshKeepalive();
 
-  try {
-    console.log('[hls] Resolving playlist:', url);
-    const { segments } = await resolveHlsSegments(url);
-    if (!segments?.length) throw new Error('No segments found in playlist');
-    console.log('[hls] Found', segments.length, 'segments');
+  // Run the download
+  runDownload(dl);
 
-    progress.segsTotal = segments.length;
+  return { ok: true, segments: segments.length };
+}
 
-    // Download segments with concurrency pool + retry
-    const CONCURRENCY = 3;
-    const RETRIES = 4;
-    const TIMEOUT_MS = 60000;
-    const chunks = new Array(segments.length);
-    let nextIdx = 0;
-    let failures = 0;
-    let cancelled = false;
+async function runDownload(dl) {
+  const { url, segments } = dl;
+  if (runningUrls.has(url)) return;
+  runningUrls.add(url);
 
-    async function worker() {
-      while (nextIdx < segments.length && !cancelled) {
-        const idx = nextIdx++;
-        if (idx >= segments.length) break;
-        const segUrl = segments[idx];
-        let lastErr = null;
+  const CONCURRENCY = 3;
+  const RETRIES = 4;
+  const TIMEOUT_MS = 60000;
 
-        for (let attempt = 0; attempt < RETRIES; attempt++) {
-          // Check if download was cancelled
-          const current = activeDownloads.get(url);
-          if (!current || current.state === 'cancelled') { cancelled = true; return; }
+  // Build set of already-completed segment indices
+  const done = new Set(dl.completedSegs || []);
+  dl.segsDone = done.size;
+  dl.percent = segments.length > 0 ? Math.round((dl.segsDone / dl.segsTotal) * 100) : 0;
 
-          try {
-            chunks[idx] = await fetchWithTimeout(segUrl, TIMEOUT_MS);
-            progress.segsDone++;
-            progress.percent = Math.round((progress.segsDone / progress.segsTotal) * 100);
-            lastErr = null;
-            break;
-          } catch (e) {
-            lastErr = e;
-            if (attempt < RETRIES - 1) {
-              await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt)));
-            }
+  let nextIdx = 0;
+  let failures = 0;
+  let cancelled = false;
+  let lastPersist = Date.now();
+
+  async function worker() {
+    while (nextIdx < segments.length && !cancelled) {
+      // Find next segment that isn't already done
+      let idx;
+      do { idx = nextIdx++; } while (idx < segments.length && done.has(idx));
+      if (idx >= segments.length) break;
+
+      const current = activeDownloads.get(url);
+      if (!current || current.state === 'cancelled') { cancelled = true; return; }
+
+      let lastErr = null;
+      for (let attempt = 0; attempt < RETRIES; attempt++) {
+        try {
+          const buf = await fetchWithTimeout(segments[idx], TIMEOUT_MS);
+          await storeSegment(url, idx, buf);
+          done.add(idx);
+          dl.segsDone = done.size;
+          dl.completedSegs = [...done];
+          dl.percent = Math.round((dl.segsDone / dl.segsTotal) * 100);
+          // Persist every 10 seconds (not every segment — too slow)
+          if (Date.now() - lastPersist > 10000) {
+            lastPersist = Date.now();
+            persistDownloads();
           }
-        }
-
-        if (lastErr) {
-          failures++;
-          if (failures > Math.max(5, segments.length * 0.1)) {
-            throw new Error(`Too many failed segments (${failures}/${segments.length})`);
+          lastErr = null;
+          break;
+        } catch (e) {
+          lastErr = e;
+          if (attempt < RETRIES - 1) {
+            await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt)));
           }
-          chunks[idx] = new ArrayBuffer(0);
-          progress.segsDone++;
-          progress.percent = Math.round((progress.segsDone / progress.segsTotal) * 100);
         }
       }
-    }
 
+      if (lastErr) {
+        failures++;
+        if (failures > Math.max(5, segments.length * 0.1)) {
+          throw new Error(`Too many failed segments (${failures}/${segments.length})`);
+        }
+        // Store empty buffer so stitching doesn't break
+        await storeSegment(url, idx, new ArrayBuffer(0));
+        done.add(idx);
+        dl.segsDone = done.size;
+        dl.completedSegs = [...done];
+        dl.percent = Math.round((dl.segsDone / dl.segsTotal) * 100);
+      }
+    }
+  }
+
+  try {
     const workers = [];
     for (let i = 0; i < Math.min(CONCURRENCY, segments.length); i++) workers.push(worker());
     await Promise.all(workers);
 
     if (cancelled) {
-      activeDownloads.delete(url);
+      dl.state = 'cancelled';
+      await persistDownloads();
+      runningUrls.delete(url);
       refreshKeepalive();
-      return { ok: false, error: 'Cancelled' };
+      return;
     }
 
-    // Stitch and save via fetch-interception (no blob URLs, no offscreen)
-    let filename = 'video.ts';
-    try {
-      const base = new URL(url).pathname.split('/').filter(Boolean).pop()?.replace(/\.m3u8.*$/, '');
-      if (base) filename = base + '.ts';
-    } catch {}
+    // All segments downloaded — stitch and save
+    console.log('[hls] All segments done, stitching', dl.filename);
+    dl.state = 'saving';
+    await persistDownloads();
 
-    console.log('[hls] All segments done, saving', filename);
-    await saveStitchedFile(chunks, filename);
-    console.log('[hls] Save complete');
+    await stitchAndSave(url, segments.length, dl.filename);
 
-    progress.state = 'done';
-    progress.percent = 100;
+    dl.state = 'done';
+    dl.percent = 100;
+    await persistDownloads();
+    runningUrls.delete(url);
     refreshKeepalive();
+    console.log('[hls] Download complete:', dl.filename);
 
-    // Badge: green checkmark
-    chrome.action.setBadgeText({ text: '✓', tabId });
-    chrome.action.setBadgeBackgroundColor({ color: '#00B894', tabId });
-    setTimeout(() => updateBadge(tabId), 10000);
+    // Clean up segments from IndexedDB after successful save
+    deleteSegments(url);
 
-    // Keep the "done" state visible for 60s, then clean up
-    setTimeout(() => {
-      activeDownloads.delete(url);
-    }, 60000);
-
-    return { ok: true, segments: segments.length, failures };
+    // Auto-remove from queue after 5 minutes
+    setTimeout(() => removeDownload(url), 300000);
 
   } catch (e) {
     console.error('[hls] Download failed:', e.message);
-    progress.state = 'error';
-    progress.error = e.message;
+    dl.state = 'error';
+    dl.error = e.message;
+    await persistDownloads();
+    runningUrls.delete(url);
     refreshKeepalive();
-    setTimeout(() => activeDownloads.delete(url), 30000);
-    return { ok: false, error: e.message };
   }
 }
+
+// =============================================
+// STITCH & SAVE — read from IndexedDB, save via save.html
+// =============================================
+
+async function stitchAndSave(downloadId, segmentCount, filename) {
+  // Read all segments from IndexedDB
+  const chunks = [];
+  for (let i = 0; i < segmentCount; i++) {
+    const data = await loadSegment(downloadId, i);
+    chunks.push(data || new ArrayBuffer(0));
+  }
+
+  const blob = new Blob(chunks, { type: 'video/mp2t' });
+  console.log(`[save] Stitched ${segmentCount} segments → ${(blob.size / 1024 / 1024).toFixed(1)}MB`);
+
+  // Strategy 1: blob URL + chrome.downloads
+  try {
+    const blobUrl = URL.createObjectURL(blob);
+    const dlId = await new Promise((resolve, reject) => {
+      chrome.downloads.download(
+        { url: blobUrl, filename, conflictAction: 'uniquify' },
+        (id) => {
+          if (chrome.runtime.lastError || !id) reject(new Error(chrome.runtime.lastError?.message || 'no ID'));
+          else resolve(id);
+        }
+      );
+    });
+    await new Promise((r) => setTimeout(r, 2000));
+    const [item] = await chrome.downloads.search({ id: dlId });
+    if (item?.state === 'interrupted') throw new Error('interrupted: ' + item.error);
+    console.log('[save] Blob URL download OK, state:', item?.state);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 120000);
+    return;
+  } catch (e) {
+    console.warn('[save] Blob URL failed:', e.message);
+  }
+
+  // Strategy 2: save page (background tab, auto-closes)
+  console.log('[save] Using save page fallback');
+  const cacheUrl = 'https://hls-save.local/' + Date.now();
+  const cache = await caches.open('hls-downloads');
+  await cache.put(cacheUrl, new Response(blob, {
+    headers: { 'Content-Type': 'video/mp2t' },
+  }));
+  const saveUrl = chrome.runtime.getURL('save.html') + '?cache=' + encodeURIComponent(cacheUrl) + '&name=' + encodeURIComponent(filename);
+  const saveTab = await chrome.tabs.create({ url: saveUrl, active: false });
+  setTimeout(() => { try { chrome.tabs.remove(saveTab.id); } catch {} }, 15000);
+}
+
+// =============================================
+// SW STARTUP — resume incomplete downloads
+// =============================================
+
+async function resumeDownloads() {
+  const downloads = await loadDownloads();
+  for (const [url, dl] of Object.entries(downloads)) {
+    if (dl.state === 'downloading' && dl.segments?.length) {
+      console.log('[resume] Resuming download:', dl.filename, `(${dl.segsDone}/${dl.segsTotal})`);
+      activeDownloads.set(url, dl);
+      runDownload(dl);
+    } else if (dl.state === 'saving') {
+      // Was in the middle of saving — retry stitch
+      console.log('[resume] Retrying save:', dl.filename);
+      activeDownloads.set(url, dl);
+      stitchAndSave(url, dl.segsTotal, dl.filename).then(() => {
+        dl.state = 'done';
+        dl.percent = 100;
+        persistDownloads();
+        deleteSegments(url);
+        setTimeout(() => removeDownload(url), 300000);
+      }).catch((e) => {
+        dl.state = 'error';
+        dl.error = e.message;
+        persistDownloads();
+      });
+    }
+  }
+  refreshKeepalive();
+}
+
+// Run on SW startup
+resumeDownloads();
 
 // =============================================
 // HLS HELPERS
@@ -486,7 +694,6 @@ async function resolveHlsSegments(m3u8Url, depth = 0) {
   const baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf('/') + 1);
   const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
 
-  // Master playlist?
   const variants = [];
   for (let i = 0; i < lines.length; i++) {
     if (lines[i].startsWith('#EXT-X-STREAM-INF')) {
@@ -502,7 +709,6 @@ async function resolveHlsSegments(m3u8Url, depth = 0) {
     return resolveHlsSegments(hlsResolve(variants[0].url, baseUrl, m3u8Url), depth + 1);
   }
 
-  // Media playlist
   const segments = [];
   for (const line of lines) {
     if (!line.startsWith('#')) segments.push(hlsResolve(line, baseUrl, m3u8Url));
@@ -516,90 +722,4 @@ function hlsResolve(url, baseUrl, originalUrl) {
     try { return new URL(originalUrl).origin + url; } catch {}
   }
   return baseUrl + url;
-}
-
-// =============================================
-// SAVE STITCHED FILE
-// =============================================
-
-async function saveStitchedFile(chunks, filename) {
-  const blob = new Blob(chunks.filter(Boolean), { type: 'video/mp2t' });
-  console.log(`[save] Stitched ${chunks.length} chunks → ${(blob.size / 1024 / 1024).toFixed(1)}MB blob`);
-
-  // Strategy 1: blob URL + chrome.downloads (Chrome 116+)
-  try {
-    const blobUrl = URL.createObjectURL(blob);
-    console.log('[save] Strategy 1: blob URL created:', blobUrl);
-    const dlId = await new Promise((resolve, reject) => {
-      chrome.downloads.download(
-        { url: blobUrl, filename, conflictAction: 'uniquify' },
-        (id) => {
-          if (chrome.runtime.lastError) {
-            console.warn('[save] Strategy 1 failed:', chrome.runtime.lastError.message);
-            reject(new Error(chrome.runtime.lastError.message));
-          } else if (!id) {
-            console.warn('[save] Strategy 1 failed: no download ID');
-            reject(new Error('No download ID returned'));
-          } else {
-            console.log('[save] Strategy 1 OK, download ID:', id);
-            resolve(id);
-          }
-        }
-      );
-    });
-    // Verify it actually started (not immediately failed)
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-    const [item] = await chrome.downloads.search({ id: dlId });
-    if (item && item.state === 'interrupted') {
-      console.warn('[save] Strategy 1 download interrupted:', item.error);
-      throw new Error('Download interrupted: ' + (item.error || 'unknown'));
-    }
-    console.log('[save] Strategy 1 verified, state:', item?.state);
-    setTimeout(() => URL.revokeObjectURL(blobUrl), 120000);
-    return;
-  } catch (e) {
-    console.warn('[save] Strategy 1 failed completely:', e.message);
-  }
-
-  // Strategy 2: data URL for small files (< 50MB)
-  if (blob.size < 50 * 1024 * 1024) {
-    try {
-      console.log('[save] Strategy 2: data URL (small file)');
-      const buf = await blob.arrayBuffer();
-      const bytes = new Uint8Array(buf);
-      let binary = '';
-      for (let i = 0; i < bytes.length; i += 8192) {
-        binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + 8192, bytes.length)));
-      }
-      const dataUrl = 'data:video/mp2t;base64,' + btoa(binary);
-      const dlId = await new Promise((resolve, reject) => {
-        chrome.downloads.download(
-          { url: dataUrl, filename, conflictAction: 'uniquify' },
-          (id) => {
-            if (chrome.runtime.lastError || !id) reject(new Error(chrome.runtime.lastError?.message || 'failed'));
-            else resolve(id);
-          }
-        );
-      });
-      console.log('[save] Strategy 2 OK, download ID:', dlId);
-      return;
-    } catch (e) {
-      console.warn('[save] Strategy 2 failed:', e.message);
-    }
-  }
-
-  // Strategy 3: open save page in new tab — always works
-  console.log('[save] Strategy 3: save via extension page');
-  const cacheUrl = 'https://hls-save.local/' + Date.now();
-  const cache = await caches.open('hls-downloads');
-  await cache.put(cacheUrl, new Response(blob, {
-    headers: { 'Content-Type': 'video/mp2t' },
-  }));
-  // Verify cache write
-  const verify = await cache.match(cacheUrl);
-  console.log('[save] Cache write verified:', !!verify, verify ? 'size=' + verify.headers.get('content-type') : 'MISSING');
-  const saveUrl = chrome.runtime.getURL('save.html') + '?cache=' + encodeURIComponent(cacheUrl) + '&name=' + encodeURIComponent(filename);
-  const saveTab = await chrome.tabs.create({ url: saveUrl, active: false });
-  // Auto-close the save tab after download starts
-  setTimeout(() => { try { chrome.tabs.remove(saveTab.id); } catch {} }, 10000);
 }

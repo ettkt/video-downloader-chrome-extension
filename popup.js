@@ -9,7 +9,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   const rescanBtn = document.getElementById('rescanBtn');
   const downloadsEl = document.getElementById('downloadQueue');
   const blockedStateEl = document.getElementById('blockedState');
-  const loadingStateEl = document.getElementById('loadingState');
+  const emptyTitleEl = document.getElementById('emptyTitle');
+  const emptySubtitleEl = document.getElementById('emptySubtitle');
+  const emptyIconEl = document.getElementById('emptyIcon');
 
   const dlIcon = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v8.5M3.5 6.5L7 10l3.5-3.5M2 12h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   const checkIcon = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 7.5l3 3 5-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
@@ -236,17 +238,25 @@ document.addEventListener('DOMContentLoaded', async () => {
   function loadVideos(callback) {
     chrome.runtime.sendMessage({ action: 'getVideos', tabId: tab.id }, (response) => {
       if (chrome.runtime.lastError || !response) return;
-      loadingStateEl.classList.add('hidden');
       renderVideos(response.videos);
       if (callback) callback();
     });
+  }
+
+  function showEmptyState(title, subtitle) {
+    emptyTitleEl.textContent = title;
+    emptySubtitleEl.textContent = subtitle || '';
+    emptyIconEl.innerHTML = `<svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+      <circle cx="24" cy="24" r="23" stroke="#DDD" stroke-width="2" stroke-dasharray="4 4"/>
+      <path d="M20 16L32 24L20 32V16Z" fill="#CCC"/></svg>`;
+    emptyStateEl.classList.add('visible');
   }
 
   function renderVideos(videos) {
     videoListEl.innerHTML = '';
 
     if (!videos?.length) {
-      emptyStateEl.classList.add('visible');
+      showEmptyState('No videos detected', 'Browse a page with video content — detection is automatic.');
       videoListEl.style.display = 'none';
       videoCountEl.textContent = '0 videos';
       return;
@@ -454,20 +464,32 @@ document.addEventListener('DOMContentLoaded', async () => {
     return;
   }
 
-  // Initial load — show loading state, then swap to results
+  // Initial load — show scanning state, then swap to results
   let hasAutoRescanned = false;
-  loadingStateEl.style.display = 'flex';
-  emptyStateEl.classList.remove('visible');
+  emptyStateEl.classList.add('visible');
+  emptyTitleEl.textContent = 'Detecting videos...';
+  emptySubtitleEl.textContent = '';
 
   chrome.runtime.sendMessage({ action: 'getVideos', tabId: tab.id }, (response) => {
-    if (chrome.runtime.lastError || !response) { loadingStateEl.classList.add('hidden'); return; }
+    if (chrome.runtime.lastError || !response) {
+      showEmptyState('No videos detected', 'Browse a page with video content — detection is automatic.');
+      return;
+    }
     if (response.videos.length === 0 && !hasAutoRescanned) {
       hasAutoRescanned = true;
       chrome.runtime.sendMessage({ action: 'rescanTab', tabId: tab.id }, () => {
-        setTimeout(() => { loadingStateEl.classList.add('hidden'); loadVideos(); }, 1000);
+        setTimeout(() => {
+          loadVideos(() => {
+            // If still empty after first try, wait longer and try once more
+            chrome.runtime.sendMessage({ action: 'getVideos', tabId: tab.id }, (r2) => {
+              if (r2?.videos?.length === 0) {
+                setTimeout(() => loadVideos(), 2000);
+              }
+            });
+          });
+        }, 1500);
       });
     } else {
-      loadingStateEl.classList.add('hidden');
       renderVideos(response.videos);
     }
   });

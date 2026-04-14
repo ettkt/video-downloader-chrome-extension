@@ -50,20 +50,16 @@
       <p class="empty-subtitle">Video detection is disabled on this platform to comply with their terms of service.</p>
     </div>
 
-    <!-- Empty state -->
+    <!-- Empty / Loading state (single element, text swapped by JS) -->
     <div id="emptyState" class="empty-state">
-      <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
-        <circle cx="24" cy="24" r="23" stroke="#DDD" stroke-width="2" stroke-dasharray="4 4"/>
-        <path d="M20 16L32 24L20 32V16Z" fill="#CCC"/>
-      </svg>
-      <p class="empty-title">No videos detected</p>
-      <p class="empty-subtitle">Browse a page with video content — detection is automatic.</p>
-    </div>
-
-    <!-- Loading state -->
-    <div id="loadingState" class="loading-state">
-      <div class="loading-spinner"></div>
-      <p>Detecting videos...</p>
+      <div id="emptyIcon">
+        <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+          <circle cx="24" cy="24" r="23" stroke="#DDD" stroke-width="2" stroke-dasharray="4 4"/>
+          <path d="M20 16L32 24L20 32V16Z" fill="#CCC"/>
+        </svg>
+      </div>
+      <p class="empty-title" id="emptyTitle">Detecting videos...</p>
+      <p class="empty-subtitle" id="emptySubtitle"></p>
     </div>
 
     <!-- Footer -->

@@ -236,6 +236,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   function loadVideos(callback) {
     chrome.runtime.sendMessage({ action: 'getVideos', tabId: tab.id }, (response) => {
       if (chrome.runtime.lastError || !response) return;
+      loadingStateEl.classList.add('hidden');
       renderVideos(response.videos);
       if (callback) callback();
     });

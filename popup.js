@@ -8,6 +8,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const clearBtn = document.getElementById('clearBtn');
   const rescanBtn = document.getElementById('rescanBtn');
   const downloadsEl = document.getElementById('downloadQueue');
+  const blockedStateEl = document.getElementById('blockedState');
 
   const dlIcon = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v8.5M3.5 6.5L7 10l3.5-3.5M2 12h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   const checkIcon = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 7.5l3 3 5-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
@@ -420,6 +421,31 @@ document.addEventListener('DOMContentLoaded', async () => {
   clearBtn.addEventListener('click', () => {
     chrome.runtime.sendMessage({ action: 'clearVideos', tabId: tab.id }, () => renderVideos([]));
   });
+
+  // Check if current tab is on a blocked domain
+  const BLOCKED_DOMAINS = [
+    'youtube.com', 'youtu.be', 'youtube-nocookie.com',
+    'netflix.com', 'disneyplus.com', 'hulu.com',
+    'primevideo.com', 'hbomax.com', 'max.com',
+    'peacocktv.com', 'paramountplus.com',
+    'crunchyroll.com', 'funimation.com',
+    'spotify.com', 'music.apple.com', 'tv.apple.com',
+  ];
+
+  let isBlocked = false;
+  try {
+    const hostname = new URL(tab.url).hostname.toLowerCase();
+    isBlocked = BLOCKED_DOMAINS.some((d) => hostname === d || hostname.endsWith('.' + d));
+  } catch {}
+
+  if (isBlocked) {
+    blockedStateEl.classList.add('visible');
+    videoListEl.style.display = 'none';
+    videoCountEl.textContent = 'blocked';
+    // Still show downloads queue even on blocked domains
+    startDownloadPolling();
+    return;
+  }
 
   // Initial load
   let hasAutoRescanned = false;

@@ -130,6 +130,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   detectedVideos.delete(tabId);
+  blockedTabs.delete(tabId);
 });
 
 // =============================================

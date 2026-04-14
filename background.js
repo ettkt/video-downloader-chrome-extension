@@ -590,9 +590,14 @@ async function saveStitchedFile(chunks, filename) {
 
   // Strategy 3: open save page in new tab — always works
   console.log('[save] Strategy 3: save via extension page');
-  const cacheKey = 'hls-save-' + Date.now();
+  const cacheUrl = 'https://hls-save.local/' + Date.now();
   const cache = await caches.open('hls-downloads');
-  await cache.put(new Request('https://hls/' + cacheKey), new Response(blob));
-  const saveUrl = chrome.runtime.getURL('save.html') + '?key=' + cacheKey + '&name=' + encodeURIComponent(filename);
+  await cache.put(cacheUrl, new Response(blob, {
+    headers: { 'Content-Type': 'video/mp2t' },
+  }));
+  // Verify cache write
+  const verify = await cache.match(cacheUrl);
+  console.log('[save] Cache write verified:', !!verify, verify ? 'size=' + verify.headers.get('content-type') : 'MISSING');
+  const saveUrl = chrome.runtime.getURL('save.html') + '?cache=' + encodeURIComponent(cacheUrl) + '&name=' + encodeURIComponent(filename);
   chrome.tabs.create({ url: saveUrl, active: true });
 }

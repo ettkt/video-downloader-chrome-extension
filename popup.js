@@ -283,7 +283,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     let actionsHtml;
     if (isStreamType) {
       actionsHtml = `
-        <button class="btn-action btn-download-stream" title="Download full stream">${dlIcon} Download</button>
+        <button class="btn-action btn-download-stream" title="Download full stream">${dlIcon} MP4</button>
+        <button class="btn-action btn-download-stream-ts" title="Download as .ts">${dlIcon} TS</button>
         <button class="btn-action btn-ffmpeg" title="Copy FFmpeg command">${ffmpegIcon}</button>
         <button class="btn-action btn-copy" title="Copy URL">${copyIcon}</button>
         <button class="btn-action btn-open" title="Open in new tab"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M6 2H3a1 1 0 00-1 1v8a1 1 0 001 1h8a1 1 0 001-1V8M8 2h4v4M7 7l5-5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
@@ -324,16 +325,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // Stream download — adds to global queue
+    function startDl(btn, format) {
+      btn.disabled = true;
+      btn.innerHTML = checkIcon + ' Queued';
+      let fn;
+      try { const base = new URL(video.url).pathname.split('/').filter(Boolean).pop()?.replace(/\.m3u8.*$/, ''); fn = base ? base + (format === 'mp4' ? '.mp4' : '.ts') : 'video.' + format; } catch { fn = 'video.' + format; }
+      chrome.runtime.sendMessage({ action: 'downloadStream', url: video.url, filename: fn, format });
+    }
     const streamBtn = card.querySelector('.btn-download-stream');
     if (streamBtn) {
-      streamBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        streamBtn.disabled = true;
-        streamBtn.innerHTML = checkIcon + ' Queued';
-        let fn;
-        try { const base = new URL(video.url).pathname.split('/').filter(Boolean).pop()?.replace(/\.m3u8.*$/, ''); fn = base ? base + '.ts' : 'video.ts'; } catch { fn = 'video.ts'; }
-        chrome.runtime.sendMessage({ action: 'downloadStream', url: video.url, filename: fn });
-      });
+      streamBtn.addEventListener('click', (e) => { e.stopPropagation(); startDl(streamBtn, 'mp4'); });
+    }
+    const streamTsBtn = card.querySelector('.btn-download-stream-ts');
+    if (streamTsBtn) {
+      streamTsBtn.addEventListener('click', (e) => { e.stopPropagation(); startDl(streamTsBtn, 'ts'); });
     }
 
     // Direct download

@@ -1,4 +1,5 @@
 // background.js — Service worker: network interception, detection, downloads
+importScripts('mux.min.js');
 
 const VIDEO_PATTERNS = [
   { regex: /\.m3u8(\?[^#]*)?(#.*)?$/i, type: 'HLS (M3U8)' },
@@ -157,7 +158,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     case 'downloadStream': {
-      handleStreamDownload(message.url, message.filename).then(sendResponse);
+      handleStreamDownload(message.url, message.filename, message.format || 'mp4').then(sendResponse);
       return true;
     }
 
@@ -425,7 +426,7 @@ chrome.runtime.onConnect.addListener((port) => {
 // HLS DOWNLOAD ENGINE — persistent, resumable
 // =============================================
 
-async function handleStreamDownload(url, filename) {
+async function handleStreamDownload(url, filename, format = 'mp4') {
   const existing = activeDownloads.get(url);
   if (existing && existing.state === 'downloading' && runningUrls.has(url)) {
     return { ok: true, message: 'Already downloading' };
@@ -464,6 +465,7 @@ async function handleStreamDownload(url, filename) {
     segsTotal: segments.length,
     segments,
     completedSegs: existing?.completedSegs || [],
+    format: format || 'mp4',
     error: null,
     startedAt: Date.now(),
   };
@@ -563,7 +565,7 @@ async function runDownload(dl) {
     dl.state = 'saving';
     await persistDownloads();
 
-    await stitchAndSave(url, segments.length, dl.filename);
+    await stitchAndSave(url, segments.length, dl.filename, dl.format);
 
     dl.state = 'done';
     dl.percent = 100;
@@ -592,7 +594,7 @@ async function runDownload(dl) {
 // STITCH & SAVE — read from IndexedDB, save via save.html
 // =============================================
 
-async function stitchAndSave(downloadId, segmentCount, filename) {
+async function stitchAndSave(downloadId, segmentCount, filename, format) {
   // Read all segments from IndexedDB
   const chunks = [];
   for (let i = 0; i < segmentCount; i++) {
@@ -600,8 +602,28 @@ async function stitchAndSave(downloadId, segmentCount, filename) {
     chunks.push(data || new ArrayBuffer(0));
   }
 
-  const blob = new Blob(chunks, { type: 'video/mp2t' });
-  console.log(`[save] Stitched ${segmentCount} segments → ${(blob.size / 1024 / 1024).toFixed(1)}MB`);
+  let blob;
+  let mimeType;
+
+  if (format === 'mp4') {
+    // Remux TS → MP4 using mux.js transmuxer
+    console.log(`[save] Remuxing ${segmentCount} segments to MP4...`);
+    try {
+      const mp4Buffer = await remuxTsToMp4(chunks);
+      blob = new Blob([mp4Buffer], { type: 'video/mp4' });
+      mimeType = 'video/mp4';
+      filename = filename.replace(/\.ts$/, '.mp4');
+      console.log(`[save] Remuxed → ${(blob.size / 1024 / 1024).toFixed(1)}MB MP4`);
+    } catch (e) {
+      console.warn('[save] MP4 remux failed, falling back to TS:', e.message);
+      blob = new Blob(chunks, { type: 'video/mp2t' });
+      mimeType = 'video/mp2t';
+    }
+  } else {
+    blob = new Blob(chunks, { type: 'video/mp2t' });
+    mimeType = 'video/mp2t';
+    console.log(`[save] Stitched ${segmentCount} segments → ${(blob.size / 1024 / 1024).toFixed(1)}MB TS`);
+  }
 
   // Strategy 1: blob URL + chrome.downloads
   try {
@@ -630,11 +652,60 @@ async function stitchAndSave(downloadId, segmentCount, filename) {
   const cacheUrl = 'https://hls-save.local/' + Date.now();
   const cache = await caches.open('hls-downloads');
   await cache.put(cacheUrl, new Response(blob, {
-    headers: { 'Content-Type': 'video/mp2t' },
+    headers: { 'Content-Type': mimeType },
   }));
   const saveUrl = chrome.runtime.getURL('save.html') + '?cache=' + encodeURIComponent(cacheUrl) + '&name=' + encodeURIComponent(filename);
   const saveTab = await chrome.tabs.create({ url: saveUrl, active: false });
   setTimeout(async () => { try { await chrome.tabs.remove(saveTab.id); } catch {} }, 15000);
+}
+
+// =============================================
+// TS → MP4 REMUXER (mux.js transmuxer)
+// =============================================
+
+function remuxTsToMp4(tsChunks) {
+  return new Promise((resolve, reject) => {
+    const transmuxer = new muxjs.mp4.Transmuxer({ remux: true });
+    const outputChunks = [];
+    let initSegment = null;
+
+    transmuxer.on('data', (segment) => {
+      if (segment.initSegment && segment.initSegment.byteLength > 0 && !initSegment) {
+        initSegment = new Uint8Array(segment.initSegment);
+      }
+      const data = new Uint8Array(segment.data);
+      if (initSegment && outputChunks.length === 0) {
+        // First output: prepend init segment (ftyp + moov)
+        const combined = new Uint8Array(initSegment.byteLength + data.byteLength);
+        combined.set(initSegment, 0);
+        combined.set(data, initSegment.byteLength);
+        outputChunks.push(combined);
+      } else {
+        outputChunks.push(data);
+      }
+    });
+
+    transmuxer.on('done', () => {
+      const totalLength = outputChunks.reduce((sum, c) => sum + c.byteLength, 0);
+      const result = new Uint8Array(totalLength);
+      let offset = 0;
+      for (const chunk of outputChunks) {
+        result.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      resolve(result.buffer);
+    });
+
+    transmuxer.on('error', (err) => reject(err));
+
+    // Feed all TS chunks
+    for (const chunk of tsChunks) {
+      if (chunk && chunk.byteLength > 0) {
+        transmuxer.push(new Uint8Array(chunk));
+      }
+    }
+    transmuxer.flush();
+  });
 }
 
 // =============================================
@@ -657,7 +728,7 @@ async function resumeDownloads() {
       } else if (dl.state === 'saving') {
         console.log('[resume] Retrying save:', dl.filename);
         activeDownloads.set(url, dl);
-        stitchAndSave(url, dl.segsTotal, dl.filename).then(() => {
+        stitchAndSave(url, dl.segsTotal, dl.filename, dl.format).then(() => {
           dl.state = 'done';
           dl.percent = 100;
           persistDownloads();

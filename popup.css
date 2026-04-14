@@ -547,6 +547,17 @@ body {
   background: #5a4bd6;
 }
 
+.btn-download-stream-ts {
+  background: #636E72;
+  color: #fff;
+  flex: 0;
+  min-width: 50px;
+}
+
+.btn-download-stream-ts:hover {
+  background: #2d3436;
+}
+
 .btn-download-stream.downloaded {
   background: #00B894;
 }

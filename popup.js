@@ -78,25 +78,29 @@ document.addEventListener('DOMContentLoaded', async () => {
           item.className = 'dl-item';
           item.dataset.dlUrl = url;
           item.innerHTML = `
-            <div class="dl-row">
-              <div class="dl-icon"></div>
-              <div class="dl-body">
-                <div class="dl-top">
-                  <div class="dl-filename"></div>
-                  <div class="dl-percent"></div>
+            <div class="dl-hero">
+              <div class="dl-row">
+                <div class="dl-icon"></div>
+                <div class="dl-body">
+                  <div class="dl-top">
+                    <div class="dl-filename"></div>
+                    <div class="dl-status-pill"></div>
+                  </div>
                 </div>
-                <div class="dl-meta"></div>
               </div>
+              <div class="dl-progress-bar"><div class="dl-progress-fill"></div></div>
             </div>
-            <div class="dl-progress-bar"><div class="dl-progress-fill"></div></div>
-            <div class="dl-actions"></div>
+            <div class="dl-footer">
+              <div class="dl-meta"></div>
+              <div class="dl-actions"></div>
+            </div>
           `;
           downloadsEl.appendChild(item);
         }
 
         const iconEl = item.querySelector('.dl-icon');
         const filenameEl = item.querySelector('.dl-filename');
-        const percentEl = item.querySelector('.dl-percent');
+        const pillEl = item.querySelector('.dl-status-pill');
         const metaEl = item.querySelector('.dl-meta');
         const fillEl = item.querySelector('.dl-progress-fill');
         const actionsEl = item.querySelector('.dl-actions');
@@ -111,8 +115,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         item.className = 'dl-item state-' + dl.state;
 
         if (dl.state === 'downloading') {
-          percentEl.textContent = dl.percent + '%';
-          percentEl.className = 'dl-percent';
+          pillEl.textContent = dl.percent + '%';
           fillEl.className = 'dl-progress-fill downloading';
           metaEl.innerHTML =
             `<span class="dl-tag type">HLS</span>` +
@@ -122,15 +125,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             chrome.runtime.sendMessage({ action: 'cancelDownload', url });
           };
         } else if (dl.state === 'saving') {
-          percentEl.innerHTML = '<span class="dl-spinner"></span>';
-          percentEl.className = 'dl-percent saving';
+          pillEl.innerHTML = '<span class="dl-spinner"></span> Saving';
           fillEl.className = 'dl-progress-fill saving';
           fillEl.style.width = '100%';
-          metaEl.innerHTML = `<span class="dl-tag type">HLS</span><span class="dl-tag">Saving file...</span>`;
+          metaEl.innerHTML = `<span class="dl-tag type">HLS</span><span class="dl-tag">${dl.segsTotal} segments</span>`;
           actionsEl.innerHTML = '';
         } else if (dl.state === 'done') {
-          percentEl.textContent = 'Done';
-          percentEl.className = 'dl-percent done';
+          pillEl.textContent = 'Done';
           fillEl.className = 'dl-progress-fill done';
           fillEl.style.width = '100%';
           metaEl.innerHTML = `<span class="dl-tag type">HLS</span><span class="dl-tag segs">${dl.segsTotal} segments</span>`;
@@ -140,8 +141,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             item.remove();
           };
         } else if (dl.state === 'error') {
-          percentEl.textContent = 'Failed';
-          percentEl.className = 'dl-percent error';
+          pillEl.textContent = 'Failed';
           fillEl.className = 'dl-progress-fill error';
           metaEl.innerHTML = `<span class="dl-tag error-msg">${dl.error || 'Unknown error'}</span>`;
           actionsEl.innerHTML = `
@@ -159,8 +159,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             item.remove();
           };
         } else if (dl.state === 'cancelled') {
-          percentEl.textContent = 'Cancelled';
-          percentEl.className = 'dl-percent error';
+          pillEl.textContent = 'Cancelled';
           fillEl.className = 'dl-progress-fill error';
           metaEl.innerHTML = '';
           actionsEl.innerHTML = `<button class="dl-btn dl-remove">${cancelIcon} Dismiss</button>`;

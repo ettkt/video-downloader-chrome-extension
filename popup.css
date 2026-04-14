@@ -104,23 +104,34 @@ body {
 }
 
 .dl-item {
-  background: #fff;
-  border: 1px solid #eee;
-  border-left: 3px solid #0984E3;
+  border: 1px solid transparent;
   border-radius: 12px;
-  padding: 12px;
+  overflow: hidden;
   margin-bottom: 6px;
-  transition: all 0.15s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
 }
 
-.dl-item:hover {
-  box-shadow: 0 2px 8px rgba(108, 92, 231, 0.08);
-}
-
+.dl-item:hover { box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12); }
 .dl-item:last-child { margin-bottom: 0; }
-.dl-item.state-saving { border-left-color: #6C5CE7; }
-.dl-item.state-done { border-left-color: #00B894; }
-.dl-item.state-error, .dl-item.state-cancelled { border-left-color: #E17055; }
+
+.dl-item.state-downloading { border-color: rgba(79, 172, 254, 0.3); }
+.dl-item.state-saving  { border-color: rgba(108, 92, 231, 0.3); }
+.dl-item.state-done    { border-color: rgba(0, 184, 148, 0.3); }
+.dl-item.state-error,
+.dl-item.state-cancelled { border-color: rgba(225, 112, 85, 0.3); }
+
+/* Hero zone — dark area like video card thumbnails */
+.dl-hero {
+  background: linear-gradient(135deg, #1a1a2e 0%, #2d2d5e 100%);
+  padding: 12px 14px;
+  position: relative;
+}
+
+.dl-item.state-done    .dl-hero { background: linear-gradient(135deg, #0d2b22 0%, #1a3a2e 100%); }
+.dl-item.state-error   .dl-hero,
+.dl-item.state-cancelled .dl-hero { background: linear-gradient(135deg, #2b1010 0%, #3a1a1a 100%); }
+.dl-item.state-saving  .dl-hero { background: linear-gradient(135deg, #1a1428 0%, #251a3e 100%); }
 
 .dl-row {
   display: flex;
@@ -129,29 +140,24 @@ body {
 }
 
 .dl-icon {
-  width: 36px;
-  height: 36px;
-  min-width: 36px;
-  border-radius: 8px;
+  width: 40px;
+  height: 40px;
+  min-width: 40px;
+  border-radius: 10px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.5px;
   color: #fff;
-  background: #6C5CE7;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.15);
 }
-
-.dl-icon.mp4 { background: #0984E3; }
-.dl-icon.webm { background: #E17055; }
 
 .dl-body {
   flex: 1;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
 }
 
 .dl-top {
@@ -164,22 +170,86 @@ body {
 .dl-filename {
   font-size: 12px;
   font-weight: 600;
-  color: #1a1a2e;
+  color: rgba(255, 255, 255, 0.9);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.dl-percent {
-  font-size: 13px;
+/* Status pill — like the type-badge on video cards */
+.dl-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 20px;
+  font-size: 11px;
   font-weight: 700;
-  color: #0984E3;
   white-space: nowrap;
+  background: rgba(79, 172, 254, 0.2);
+  color: #4facfe;
+  border: 1px solid rgba(79, 172, 254, 0.3);
 }
 
-.dl-percent.saving { color: #6C5CE7; }
-.dl-percent.done { color: #00B894; }
-.dl-percent.error { color: #E17055; }
+.state-saving  .dl-status-pill { background: rgba(108, 92, 231, 0.25); color: #a29bfe; border-color: rgba(108, 92, 231, 0.4); }
+.state-done    .dl-status-pill { background: rgba(0, 184, 148, 0.25); color: #00cec9; border-color: rgba(0, 184, 148, 0.4); }
+.state-error   .dl-status-pill,
+.state-cancelled .dl-status-pill { background: rgba(225, 112, 85, 0.25); color: #fab1a0; border-color: rgba(225, 112, 85, 0.4); }
+
+.dl-progress-bar {
+  height: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-top: 10px;
+}
+
+.dl-progress-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.3s ease;
+  width: 0%;
+}
+
+.dl-progress-fill.downloading {
+  background: linear-gradient(90deg, #4facfe 0%, #4facfe 40%, rgba(255,255,255,0.5) 50%, #4facfe 60%, #4facfe 100%);
+  background-size: 300% 100%;
+  box-shadow: 0 0 8px rgba(79, 172, 254, 0.6);
+  animation: shimmer-ltr 1.8s linear infinite;
+}
+
+.dl-progress-fill.saving {
+  background: linear-gradient(90deg, #6C5CE7 0%, #a29bfe 100%);
+  animation: pulse-glow 1s ease infinite;
+}
+
+.dl-progress-fill.done {
+  background: linear-gradient(90deg, #00b894 0%, #00cec9 100%);
+  box-shadow: 0 0 8px rgba(0, 184, 148, 0.5);
+}
+
+.dl-progress-fill.error { background: #E17055; }
+
+@keyframes shimmer-ltr {
+  0%   { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 8px rgba(108, 92, 231, 0.5); }
+  50%      { box-shadow: 0 0 16px rgba(108, 92, 231, 0.9); }
+}
+
+/* Footer zone — light strip below hero */
+.dl-footer {
+  padding: 8px 12px;
+  background: #fafafa;
+  border-top: 1px solid #f0f0f0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
 
 .dl-meta {
   display: flex;
@@ -191,57 +261,18 @@ body {
 .dl-tag {
   font-size: 10px;
   color: #999;
-  background: #f5f5f5;
+  background: #f0f0f0;
   padding: 2px 6px;
   border-radius: 4px;
 }
 
 .dl-tag.type { color: #6C5CE7; background: #f0eeff; font-weight: 700; letter-spacing: 0.5px; }
 .dl-tag.segs { color: #0984E3; background: #e8f4fd; font-weight: 600; }
-.dl-tag.error-msg { color: #E17055; background: #ffeee8; }
-
-.dl-progress-bar {
-  height: 6px;
-  background: #eee;
-  border-radius: 3px;
-  overflow: hidden;
-  margin-top: 6px;
-}
-
-.dl-progress-fill {
-  height: 100%;
-  border-radius: 3px;
-  transition: width 0.3s ease;
-  width: 0%;
-  position: relative;
-}
-
-.dl-progress-fill.downloading {
-  background: #0984E3;
-  background-image: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.35) 50%, transparent 100%);
-  background-size: 200% 100%;
-  animation: shimmer 1.5s ease infinite;
-}
-
-.dl-progress-fill.saving { background: #6C5CE7; animation: pulse 1s ease infinite; }
-.dl-progress-fill.done { background: #00B894; }
-.dl-progress-fill.error { background: #E17055; }
-
-@keyframes shimmer {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
-}
+.dl-tag.error-msg { color: #E17055; background: #ffeee8; font-size: 10px; }
 
 .dl-actions {
   display: flex;
   gap: 6px;
-  justify-content: flex-end;
-  margin-top: 8px;
 }
 
 .dl-btn {
@@ -249,11 +280,11 @@ body {
   align-items: center;
   justify-content: center;
   gap: 4px;
-  height: 28px;
+  height: 26px;
   padding: 0 10px;
   border: none;
-  border-radius: 8px;
-  font-size: 11px;
+  border-radius: 6px;
+  font-size: 10px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -267,10 +298,10 @@ body {
 .dl-retry:hover { background: #0984E3; color: #fff; }
 
 .dl-spinner {
-  width: 14px;
-  height: 14px;
-  border: 2px solid #ddd;
-  border-top-color: #6C5CE7;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255,255,255,0.2);
+  border-top-color: #a29bfe;
   border-radius: 50%;
   animation: spin 0.6s linear infinite;
   display: inline-block;

@@ -424,16 +424,14 @@ async function handleStreamDownload(tabId, url) {
       return { ok: false, error: 'Cancelled' };
     }
 
-    // Stitch and save via offscreen document (blob URLs unreliable in MV3 service workers)
-    const blob = new Blob(chunks.filter(Boolean), { type: 'video/mp2t' });
-
+    // Stitch and save via fetch-interception (no blob URLs, no offscreen)
     let filename = 'video.ts';
     try {
       const base = new URL(url).pathname.split('/').filter(Boolean).pop()?.replace(/\.m3u8.*$/, '');
       if (base) filename = base + '.ts';
     } catch {}
 
-    await saveBlobViaOffscreen(blob, filename, tabId);
+    await saveStitchedFile(chunks, filename);
 
     progress.state = 'done';
     progress.percent = 100;
@@ -516,72 +514,57 @@ function hlsResolve(url, baseUrl, originalUrl) {
 }
 
 // =============================================
-// OFFSCREEN DOCUMENT — reliable blob saving for MV3
+// SAVE STITCHED FILE — fetch-interception approach
 // =============================================
-let offscreenReady = false;
+// The service worker intercepts its own fetch requests, so we:
+// 1. Store the blob in Cache API under a fake URL
+// 2. Tell chrome.downloads to download that URL
+// 3. The fetch event serves it from cache
+// This avoids blob URLs (broken in MV3 SW) and offscreen docs.
 
-async function ensureOffscreen() {
-  if (offscreenReady) {
-    // Verify it's actually still open
-    const contexts = await chrome.runtime.getContexts({
-      contextTypes: ['OFFSCREEN_DOCUMENT'],
-    });
-    if (contexts.length > 0) return;
-    offscreenReady = false;
-  }
-  try {
-    await chrome.offscreen.createDocument({
-      url: 'offscreen.html',
-      reasons: ['BLOBS'],
-      justification: 'Save stitched HLS video as downloadable file',
-    });
-    offscreenReady = true;
-  } catch (e) {
-    // Already exists (race condition)
-    if (e.message?.includes('already exists')) { offscreenReady = true; return; }
-    throw e;
-  }
-}
+const HLS_DOWNLOAD_PREFIX = 'https://hls-download.invalid/';
 
-async function saveBlobViaOffscreen(blob, filename, tabId) {
-  // Store blob in Cache API (shared between SW and offscreen doc)
-  const cacheKey = `https://hls-download/${Date.now()}`;
+self.addEventListener('fetch', (event) => {
+  const url = event.request.url;
+  if (url.startsWith(HLS_DOWNLOAD_PREFIX)) {
+    event.respondWith(
+      caches.open('hls-downloads').then(async (cache) => {
+        const resp = await cache.match(url);
+        if (resp) {
+          // Clean up cache after serving
+          cache.delete(url);
+          return resp;
+        }
+        return new Response('Not found', { status: 404 });
+      })
+    );
+  }
+});
+
+async function saveStitchedFile(chunks, filename) {
+  // Stitch into blob and store in Cache API
+  const blob = new Blob(chunks.filter(Boolean), { type: 'video/mp2t' });
+  const cacheUrl = HLS_DOWNLOAD_PREFIX + Date.now() + '/' + encodeURIComponent(filename);
   const cache = await caches.open('hls-downloads');
-  await cache.put(new Request(cacheKey), new Response(blob));
+  await cache.put(cacheUrl, new Response(blob, {
+    headers: {
+      'Content-Type': 'video/mp2t',
+      'Content-Length': blob.size.toString(),
+    },
+  }));
 
-  try {
-    await ensureOffscreen();
-    const result = await chrome.runtime.sendMessage({
-      action: 'saveBlob', cacheKey, filename,
-    });
-    if (!result?.ok) throw new Error(result?.error || 'Offscreen save failed');
-  } catch (e) {
-    // Fallback: try chrome.downloads directly (works on Chrome 116+)
-    await cache.delete(cacheKey);
-    try {
-      const blobUrl = URL.createObjectURL(blob);
-      await new Promise((resolve, reject) => {
-        chrome.downloads.download({ url: blobUrl, filename, conflictAction: 'uniquify' }, (dlId) => {
-          if (chrome.runtime.lastError || !dlId) reject(new Error('Download API failed'));
-          else resolve(dlId);
-        });
-      });
-      setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
-    } catch {
-      // Last resort: open in tab via content script
-      if (await pingContentScript(tabId)) {
-        await new Promise((resolve) => {
-          chrome.tabs.sendMessage(tabId, { action: 'triggerDownload', blobUrl: '', filename, fallback: true }, () => resolve());
-        });
+  // chrome.downloads will fetch this URL → our fetch handler serves it from cache
+  return new Promise((resolve, reject) => {
+    chrome.downloads.download(
+      { url: cacheUrl, filename, conflictAction: 'uniquify' },
+      (dlId) => {
+        if (chrome.runtime.lastError || !dlId) {
+          cache.delete(cacheUrl);
+          reject(new Error(chrome.runtime.lastError?.message || 'Download API failed'));
+        } else {
+          resolve(dlId);
+        }
       }
-      throw new Error('All save methods failed');
-    }
-  }
-}
-
-async function triggerBlobDownloadInTab(tabId, blobUrl, filename) {
-  if (!(await pingContentScript(tabId))) return;
-  return new Promise((resolve) => {
-    chrome.tabs.sendMessage(tabId, { action: 'triggerDownload', blobUrl, filename }, () => resolve());
+    );
   });
 }

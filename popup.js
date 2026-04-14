@@ -115,7 +115,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       return b.timestamp - a.timestamp;
     });
 
-    videos.forEach((v) => videoListEl.appendChild(createVideoCard(v)));
+    videos.forEach((v) => {
+      try { videoListEl.appendChild(createVideoCard(v)); } catch (e) { console.warn('Card error:', e); }
+    });
   }
 
   // --- Card creation ---

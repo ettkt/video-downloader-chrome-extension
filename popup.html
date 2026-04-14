@@ -18,13 +18,13 @@
         <h1>Video Detector</h1>
       </div>
       <div class="header-actions">
-        <button id="rescanBtn" class="btn-icon" title="Rescan page">
+        <button id="rescanBtn" class="btn-icon" title="Rescan page" aria-label="Rescan page">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
             <path d="M13.65 2.35A7.96 7.96 0 008 0a8 8 0 108 8h-2a6 6 0 11-1.76-4.24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
             <path d="M14 0v4h-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
         </button>
-        <button id="clearBtn" class="btn-icon" title="Clear all">
+        <button id="clearBtn" class="btn-icon" title="Clear all" aria-label="Clear all detected videos">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
             <path d="M2 4h12M5.333 4V2.667a1.333 1.333 0 011.334-1.334h2.666a1.333 1.333 0 011.334 1.334V4m2 0v9.333a1.333 1.333 0 01-1.334 1.334H4.667a1.333 1.333 0 01-1.334-1.334V4h9.334z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
@@ -60,12 +60,25 @@
       <p class="empty-subtitle">Browse a page with video content — detection is automatic.</p>
     </div>
 
+    <!-- Loading state -->
+    <div id="loadingState" class="loading-state">
+      <div class="loading-spinner"></div>
+      <p>Detecting videos...</p>
+    </div>
+
     <!-- Footer -->
     <footer class="footer">
-      <span id="videoCount">0 videos</span>
+      <span id="videoCount" role="status" aria-live="polite">0 videos</span>
       <span class="footer-dot">&middot;</span>
       <span id="pageUrl" class="page-url" title=""></span>
     </footer>
+    <div class="footer-support">
+      <a href="https://buymeacoffee.com/nicevideod" target="_blank" rel="noopener" class="support-link">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M18 8h1a4 4 0 010 8h-1M2 8h16v9a4 4 0 01-4 4H6a4 4 0 01-4-4V8zM6 1v3M10 1v3M14 1v3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Support this project
+      </a>
+      <span class="footer-version">v1.0.0</span>
+    </div>
   </div>
 
   <script src="popup.js"></script>

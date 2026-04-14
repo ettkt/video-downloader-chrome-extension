@@ -2,12 +2,13 @@
   "manifest_version": 3,
   "name": "Video & M3U8 Detector",
   "version": "1.0.0",
-  "description": "Detect video streams (M3U8/HLS, MP4, WebM, DASH) on any website without playing them.",
+  "description": "Detect and download video streams (M3U8/HLS, MP4, WebM, DASH) on any website. Converts HLS to MP4 automatically.",
+  "minimum_chrome_version": "116",
+  "homepage_url": "https://github.com/ettkt/video-downloader-chrome-extension",
   "permissions": [
     "webRequest",
     "activeTab",
     "storage",
-    "tabs",
     "downloads",
     "scripting",
     "alarms"

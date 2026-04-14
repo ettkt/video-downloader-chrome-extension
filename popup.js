@@ -9,6 +9,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const rescanBtn = document.getElementById('rescanBtn');
   const downloadsEl = document.getElementById('downloadQueue');
   const blockedStateEl = document.getElementById('blockedState');
+  const loadingStateEl = document.getElementById('loadingState');
 
   const dlIcon = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v8.5M3.5 6.5L7 10l3.5-3.5M2 12h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   const checkIcon = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 7.5l3 3 5-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
@@ -39,8 +40,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   function startDownloadPolling() {
     renderDownloadQueue();
     if (downloadPollId) clearInterval(downloadPollId);
-    downloadPollId = setInterval(renderDownloadQueue, 800);
+    downloadPollId = setInterval(renderDownloadQueue, 1000);
   }
+
+  // Clean up polling on popup close
+  window.addEventListener('unload', () => {
+    if (downloadPollId) clearInterval(downloadPollId);
+  });
 
   function getFileExt(filename) {
     const ext = (filename || '').split('.').pop()?.toUpperCase();
@@ -447,16 +453,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     return;
   }
 
-  // Initial load
+  // Initial load — show loading state, then swap to results
   let hasAutoRescanned = false;
+  loadingStateEl.style.display = 'flex';
+  emptyStateEl.classList.remove('visible');
+
   chrome.runtime.sendMessage({ action: 'getVideos', tabId: tab.id }, (response) => {
-    if (chrome.runtime.lastError || !response) return;
+    if (chrome.runtime.lastError || !response) { loadingStateEl.classList.add('hidden'); return; }
     if (response.videos.length === 0 && !hasAutoRescanned) {
       hasAutoRescanned = true;
       chrome.runtime.sendMessage({ action: 'rescanTab', tabId: tab.id }, () => {
-        setTimeout(() => loadVideos(), 1000);
+        setTimeout(() => { loadingStateEl.classList.add('hidden'); loadVideos(); }, 1000);
       });
     } else {
+      loadingStateEl.classList.add('hidden');
       renderVideos(response.videos);
     }
   });

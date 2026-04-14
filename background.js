@@ -18,6 +18,7 @@ const IGNORE_PATTERNS = [
 ];
 
 const detectedVideos = new Map();  // tabId → Map<url, entry>
+const blockedTabs = new Set();
 
 function shouldIgnore(url) {
   return IGNORE_PATTERNS.some((p) => p.test(url));
@@ -59,12 +60,7 @@ function addDetection(tabId, url, type, source) {
     });
   }
 
-  if (!entry.isStream) {
-    fetch(url, { method: 'HEAD' }).then((r) => {
-      const cl = r.headers.get('content-length');
-      if (cl) entry.size = parseInt(cl, 10);
-    }).catch(() => {});
-  }
+  // Size is captured from onHeadersReceived — no speculative HEAD needed
 }
 
 function updateBadge(tabId) {

@@ -3,6 +3,14 @@
 (() => {
   'use strict';
 
+  // Prevent double-injection (re-inject only re-scans, doesn't re-patch)
+  if (window.__videoDetectorInjected) {
+    // Already injected — just re-scan and exit
+    try { window.__videoDetectorRescan(); } catch {}
+    return;
+  }
+  window.__videoDetectorInjected = true;
+
   const VIDEO_REGEX =
     /https?:\/\/[^\s"'<>\)}\]]+?\.(m3u8|mpd|mp4|webm|flv)(\?[^\s"'<>\)}\]]*)?/gi;
 
@@ -330,6 +338,9 @@
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
   }
+
+  // Expose rescan for re-injection guard
+  window.__videoDetectorRescan = () => { reported.clear(); scanAll(); };
 
   // --- Run ---
   interceptNetworkCalls();

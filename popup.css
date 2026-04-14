@@ -94,23 +94,71 @@ body {
   background: #f8f7ff;
 }
 
+.dl-header {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: #6C5CE7;
+  padding: 2px 4px 6px;
+}
+
 .dl-item {
   background: #fff;
   border: 1px solid #eee;
-  border-radius: 8px;
-  padding: 10px 12px;
+  border-left: 3px solid #0984E3;
+  border-radius: 12px;
+  padding: 12px;
   margin-bottom: 6px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+  transition: all 0.15s ease;
+}
+
+.dl-item:hover {
+  box-shadow: 0 2px 8px rgba(108, 92, 231, 0.08);
 }
 
 .dl-item:last-child { margin-bottom: 0; }
+.dl-item.state-saving { border-left-color: #6C5CE7; }
+.dl-item.state-done { border-left-color: #00B894; }
+.dl-item.state-error, .dl-item.state-cancelled { border-left-color: #E17055; }
 
-.dl-info {
+.dl-row {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 10px;
+}
+
+.dl-icon {
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  color: #fff;
+  background: #6C5CE7;
+}
+
+.dl-icon.mp4 { background: #0984E3; }
+.dl-icon.webm { background: #E17055; }
+
+.dl-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dl-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .dl-filename {
@@ -120,36 +168,69 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 240px;
 }
 
-.dl-status {
-  font-size: 11px;
-  color: #666;
+.dl-percent {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0984E3;
   white-space: nowrap;
 }
 
-.dl-status.done { color: #00B894; font-weight: 600; }
-.dl-status.error { color: #E17055; }
+.dl-percent.saving { color: #6C5CE7; }
+.dl-percent.done { color: #00B894; }
+.dl-percent.error { color: #E17055; }
+
+.dl-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.dl-tag {
+  font-size: 10px;
+  color: #999;
+  background: #f5f5f5;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.dl-tag.type { color: #6C5CE7; background: #f0eeff; font-weight: 700; letter-spacing: 0.5px; }
+.dl-tag.segs { color: #0984E3; background: #e8f4fd; font-weight: 600; }
+.dl-tag.error-msg { color: #E17055; background: #ffeee8; }
 
 .dl-progress-bar {
-  height: 4px;
+  height: 6px;
   background: #eee;
-  border-radius: 2px;
+  border-radius: 3px;
   overflow: hidden;
+  margin-top: 6px;
 }
 
 .dl-progress-fill {
   height: 100%;
-  border-radius: 2px;
+  border-radius: 3px;
   transition: width 0.3s ease;
   width: 0%;
+  position: relative;
 }
 
-.dl-progress-fill.downloading { background: #0984E3; }
+.dl-progress-fill.downloading {
+  background: #0984E3;
+  background-image: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.35) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease infinite;
+}
+
 .dl-progress-fill.saving { background: #6C5CE7; animation: pulse 1s ease infinite; }
 .dl-progress-fill.done { background: #00B894; }
 .dl-progress-fill.error { background: #E17055; }
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
 
 @keyframes pulse {
   0%, 100% { opacity: 1; }
@@ -158,18 +239,22 @@ body {
 
 .dl-actions {
   display: flex;
-  gap: 4px;
+  gap: 6px;
   justify-content: flex-end;
+  margin-top: 8px;
 }
 
 .dl-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  gap: 4px;
+  height: 28px;
+  padding: 0 10px;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 600;
   cursor: pointer;
   transition: all 0.15s ease;
 }
@@ -180,6 +265,16 @@ body {
 .dl-remove:hover { background: #ddd; color: #666; }
 .dl-retry { background: #e8f4fd; color: #0984E3; }
 .dl-retry:hover { background: #0984E3; color: #fff; }
+
+.dl-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid #ddd;
+  border-top-color: #6C5CE7;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+  display: inline-block;
+}
 
 /* === Video List === */
 .video-list {

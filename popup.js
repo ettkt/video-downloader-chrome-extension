@@ -41,6 +41,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     downloadPollId = setInterval(renderDownloadQueue, 800);
   }
 
+  function getFileExt(filename) {
+    const ext = (filename || '').split('.').pop()?.toUpperCase();
+    return ext || 'TS';
+  }
+
   function renderDownloadQueue() {
     chrome.runtime.sendMessage({ action: 'getAllDownloads' }, (downloads) => {
       if (chrome.runtime.lastError || !downloads) return;
@@ -52,7 +57,16 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
 
       downloadsEl.style.display = 'block';
-      // Update existing items or create new ones
+
+      // Ensure header exists
+      if (!downloadsEl.querySelector('.dl-header')) {
+        const header = document.createElement('div');
+        header.className = 'dl-header';
+        downloadsEl.prepend(header);
+      }
+      const activeCount = entries.filter(([, d]) => d.state === 'downloading' || d.state === 'saving').length;
+      downloadsEl.querySelector('.dl-header').textContent = `Downloads${activeCount > 0 ? '  \u00b7  ' + activeCount + ' active' : ''}`;
+
       const existing = new Set();
 
       for (const [url, dl] of entries) {
@@ -64,9 +78,15 @@ document.addEventListener('DOMContentLoaded', async () => {
           item.className = 'dl-item';
           item.dataset.dlUrl = url;
           item.innerHTML = `
-            <div class="dl-info">
-              <div class="dl-filename"></div>
-              <div class="dl-status"></div>
+            <div class="dl-row">
+              <div class="dl-icon"></div>
+              <div class="dl-body">
+                <div class="dl-top">
+                  <div class="dl-filename"></div>
+                  <div class="dl-percent"></div>
+                </div>
+                <div class="dl-meta"></div>
+              </div>
             </div>
             <div class="dl-progress-bar"><div class="dl-progress-fill"></div></div>
             <div class="dl-actions"></div>
@@ -74,46 +94,59 @@ document.addEventListener('DOMContentLoaded', async () => {
           downloadsEl.appendChild(item);
         }
 
+        const iconEl = item.querySelector('.dl-icon');
         const filenameEl = item.querySelector('.dl-filename');
-        const statusEl = item.querySelector('.dl-status');
+        const percentEl = item.querySelector('.dl-percent');
+        const metaEl = item.querySelector('.dl-meta');
         const fillEl = item.querySelector('.dl-progress-fill');
         const actionsEl = item.querySelector('.dl-actions');
 
+        const ext = getFileExt(dl.filename);
+        iconEl.textContent = ext;
+        iconEl.className = 'dl-icon' + (ext === 'MP4' ? ' mp4' : ext === 'WEBM' ? ' webm' : '');
         filenameEl.textContent = dl.filename || 'video.ts';
         fillEl.style.width = dl.percent + '%';
 
+        // State class on item for left-border color
+        item.className = 'dl-item state-' + dl.state;
+
         if (dl.state === 'downloading') {
-          const info = dl.segsTotal ? `${dl.segsDone}/${dl.segsTotal} segments` : '';
-          statusEl.textContent = `${dl.percent}% ${info}`;
-          statusEl.className = 'dl-status';
+          percentEl.textContent = dl.percent + '%';
+          percentEl.className = 'dl-percent';
           fillEl.className = 'dl-progress-fill downloading';
-          actionsEl.innerHTML = `<button class="dl-btn dl-cancel" title="Cancel">${cancelIcon}</button>`;
+          metaEl.innerHTML =
+            `<span class="dl-tag type">HLS</span>` +
+            (dl.segsTotal ? `<span class="dl-tag segs">${dl.segsDone}/${dl.segsTotal} segments</span>` : '');
+          actionsEl.innerHTML = `<button class="dl-btn dl-cancel">${cancelIcon} Cancel</button>`;
           actionsEl.querySelector('.dl-cancel').onclick = () => {
             chrome.runtime.sendMessage({ action: 'cancelDownload', url });
           };
         } else if (dl.state === 'saving') {
-          statusEl.textContent = 'Saving file...';
-          statusEl.className = 'dl-status';
+          percentEl.innerHTML = '<span class="dl-spinner"></span>';
+          percentEl.className = 'dl-percent saving';
           fillEl.className = 'dl-progress-fill saving';
           fillEl.style.width = '100%';
+          metaEl.innerHTML = `<span class="dl-tag type">HLS</span><span class="dl-tag">Saving file...</span>`;
           actionsEl.innerHTML = '';
         } else if (dl.state === 'done') {
-          statusEl.textContent = 'Complete!';
-          statusEl.className = 'dl-status done';
+          percentEl.textContent = 'Done';
+          percentEl.className = 'dl-percent done';
           fillEl.className = 'dl-progress-fill done';
           fillEl.style.width = '100%';
-          actionsEl.innerHTML = `<button class="dl-btn dl-remove" title="Dismiss">${cancelIcon}</button>`;
+          metaEl.innerHTML = `<span class="dl-tag type">HLS</span><span class="dl-tag segs">${dl.segsTotal} segments</span>`;
+          actionsEl.innerHTML = `<button class="dl-btn dl-remove">${cancelIcon} Dismiss</button>`;
           actionsEl.querySelector('.dl-remove').onclick = () => {
             chrome.runtime.sendMessage({ action: 'removeDownload', url });
             item.remove();
           };
         } else if (dl.state === 'error') {
-          statusEl.textContent = dl.error || 'Failed';
-          statusEl.className = 'dl-status error';
+          percentEl.textContent = 'Failed';
+          percentEl.className = 'dl-percent error';
           fillEl.className = 'dl-progress-fill error';
+          metaEl.innerHTML = `<span class="dl-tag error-msg">${dl.error || 'Unknown error'}</span>`;
           actionsEl.innerHTML = `
-            <button class="dl-btn dl-retry" title="Retry">${dlIcon}</button>
-            <button class="dl-btn dl-remove" title="Dismiss">${cancelIcon}</button>
+            <button class="dl-btn dl-retry">${dlIcon} Retry</button>
+            <button class="dl-btn dl-remove">${cancelIcon} Dismiss</button>
           `;
           const retryBtn = actionsEl.querySelector('.dl-retry');
           if (retryBtn) retryBtn.onclick = () => {
@@ -126,10 +159,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             item.remove();
           };
         } else if (dl.state === 'cancelled') {
-          statusEl.textContent = 'Cancelled';
-          statusEl.className = 'dl-status error';
+          percentEl.textContent = 'Cancelled';
+          percentEl.className = 'dl-percent error';
           fillEl.className = 'dl-progress-fill error';
-          actionsEl.innerHTML = `<button class="dl-btn dl-remove" title="Dismiss">${cancelIcon}</button>`;
+          metaEl.innerHTML = '';
+          actionsEl.innerHTML = `<button class="dl-btn dl-remove">${cancelIcon} Dismiss</button>`;
           actionsEl.querySelector('.dl-remove').onclick = () => {
             chrome.runtime.sendMessage({ action: 'removeDownload', url });
             item.remove();

@@ -634,7 +634,7 @@ async function stitchAndSave(downloadId, segmentCount, filename) {
   }));
   const saveUrl = chrome.runtime.getURL('save.html') + '?cache=' + encodeURIComponent(cacheUrl) + '&name=' + encodeURIComponent(filename);
   const saveTab = await chrome.tabs.create({ url: saveUrl, active: false });
-  setTimeout(() => { try { chrome.tabs.remove(saveTab.id); } catch {} }, 15000);
+  setTimeout(async () => { try { await chrome.tabs.remove(saveTab.id); } catch {} }, 15000);
 }
 
 // =============================================
@@ -642,30 +642,38 @@ async function stitchAndSave(downloadId, segmentCount, filename) {
 // =============================================
 
 async function resumeDownloads() {
-  const downloads = await loadDownloads();
-  for (const [url, dl] of Object.entries(downloads)) {
-    if (dl.state === 'downloading' && dl.segments?.length) {
-      console.log('[resume] Resuming download:', dl.filename, `(${dl.segsDone}/${dl.segsTotal})`);
-      activeDownloads.set(url, dl);
-      runDownload(dl);
-    } else if (dl.state === 'saving') {
-      // Was in the middle of saving — retry stitch
-      console.log('[resume] Retrying save:', dl.filename);
-      activeDownloads.set(url, dl);
-      stitchAndSave(url, dl.segsTotal, dl.filename).then(() => {
-        dl.state = 'done';
-        dl.percent = 100;
-        persistDownloads();
-        deleteSegments(url);
-        setTimeout(() => removeDownload(url), 300000);
-      }).catch((e) => {
-        dl.state = 'error';
-        dl.error = e.message;
-        persistDownloads();
-      });
+  try {
+    const downloads = await loadDownloads();
+    for (const [url, dl] of Object.entries(downloads)) {
+      // Clean up stale terminal states
+      if (dl.state === 'done' || dl.state === 'cancelled') {
+        activeDownloads.set(url, dl);
+        continue;
+      }
+      if (dl.state === 'downloading' && dl.segments?.length) {
+        console.log('[resume] Resuming download:', dl.filename, `(${dl.segsDone}/${dl.segsTotal})`);
+        activeDownloads.set(url, dl);
+        runDownload(dl);
+      } else if (dl.state === 'saving') {
+        console.log('[resume] Retrying save:', dl.filename);
+        activeDownloads.set(url, dl);
+        stitchAndSave(url, dl.segsTotal, dl.filename).then(() => {
+          dl.state = 'done';
+          dl.percent = 100;
+          persistDownloads();
+          deleteSegments(url);
+          setTimeout(() => removeDownload(url), 300000);
+        }).catch((e) => {
+          dl.state = 'error';
+          dl.error = e.message;
+          persistDownloads();
+        });
+      }
     }
+    refreshKeepalive();
+  } catch (e) {
+    console.error('[resume] Error resuming downloads:', e);
   }
-  refreshKeepalive();
 }
 
 // Run on SW startup

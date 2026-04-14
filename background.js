@@ -362,8 +362,10 @@ async function handleStreamDownload(tabId, url) {
   refreshKeepalive();
 
   try {
+    console.log('[hls] Resolving playlist:', url);
     const { segments } = await resolveHlsSegments(url);
     if (!segments?.length) throw new Error('No segments found in playlist');
+    console.log('[hls] Found', segments.length, 'segments');
 
     progress.segsTotal = segments.length;
 
@@ -431,7 +433,9 @@ async function handleStreamDownload(tabId, url) {
       if (base) filename = base + '.ts';
     } catch {}
 
+    console.log('[hls] All segments done, saving', filename);
     await saveStitchedFile(chunks, filename);
+    console.log('[hls] Save complete');
 
     progress.state = 'done';
     progress.percent = 100;
@@ -450,6 +454,7 @@ async function handleStreamDownload(tabId, url) {
     return { ok: true, segments: segments.length, failures };
 
   } catch (e) {
+    console.error('[hls] Download failed:', e.message);
     progress.state = 'error';
     progress.error = e.message;
     refreshKeepalive();
@@ -514,57 +519,80 @@ function hlsResolve(url, baseUrl, originalUrl) {
 }
 
 // =============================================
-// SAVE STITCHED FILE — fetch-interception approach
+// SAVE STITCHED FILE
 // =============================================
-// The service worker intercepts its own fetch requests, so we:
-// 1. Store the blob in Cache API under a fake URL
-// 2. Tell chrome.downloads to download that URL
-// 3. The fetch event serves it from cache
-// This avoids blob URLs (broken in MV3 SW) and offscreen docs.
-
-const HLS_DOWNLOAD_PREFIX = 'https://hls-download.invalid/';
-
-self.addEventListener('fetch', (event) => {
-  const url = event.request.url;
-  if (url.startsWith(HLS_DOWNLOAD_PREFIX)) {
-    event.respondWith(
-      caches.open('hls-downloads').then(async (cache) => {
-        const resp = await cache.match(url);
-        if (resp) {
-          // Clean up cache after serving
-          cache.delete(url);
-          return resp;
-        }
-        return new Response('Not found', { status: 404 });
-      })
-    );
-  }
-});
 
 async function saveStitchedFile(chunks, filename) {
-  // Stitch into blob and store in Cache API
   const blob = new Blob(chunks.filter(Boolean), { type: 'video/mp2t' });
-  const cacheUrl = HLS_DOWNLOAD_PREFIX + Date.now() + '/' + encodeURIComponent(filename);
-  const cache = await caches.open('hls-downloads');
-  await cache.put(cacheUrl, new Response(blob, {
-    headers: {
-      'Content-Type': 'video/mp2t',
-      'Content-Length': blob.size.toString(),
-    },
-  }));
+  console.log(`[save] Stitched ${chunks.length} chunks → ${(blob.size / 1024 / 1024).toFixed(1)}MB blob`);
 
-  // chrome.downloads will fetch this URL → our fetch handler serves it from cache
-  return new Promise((resolve, reject) => {
-    chrome.downloads.download(
-      { url: cacheUrl, filename, conflictAction: 'uniquify' },
-      (dlId) => {
-        if (chrome.runtime.lastError || !dlId) {
-          cache.delete(cacheUrl);
-          reject(new Error(chrome.runtime.lastError?.message || 'Download API failed'));
-        } else {
-          resolve(dlId);
+  // Strategy 1: blob URL + chrome.downloads (Chrome 116+)
+  try {
+    const blobUrl = URL.createObjectURL(blob);
+    console.log('[save] Strategy 1: blob URL created:', blobUrl);
+    const dlId = await new Promise((resolve, reject) => {
+      chrome.downloads.download(
+        { url: blobUrl, filename, conflictAction: 'uniquify' },
+        (id) => {
+          if (chrome.runtime.lastError) {
+            console.warn('[save] Strategy 1 failed:', chrome.runtime.lastError.message);
+            reject(new Error(chrome.runtime.lastError.message));
+          } else if (!id) {
+            console.warn('[save] Strategy 1 failed: no download ID');
+            reject(new Error('No download ID returned'));
+          } else {
+            console.log('[save] Strategy 1 OK, download ID:', id);
+            resolve(id);
+          }
         }
+      );
+    });
+    // Verify it actually started (not immediately failed)
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    const [item] = await chrome.downloads.search({ id: dlId });
+    if (item && item.state === 'interrupted') {
+      console.warn('[save] Strategy 1 download interrupted:', item.error);
+      throw new Error('Download interrupted: ' + (item.error || 'unknown'));
+    }
+    console.log('[save] Strategy 1 verified, state:', item?.state);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 120000);
+    return;
+  } catch (e) {
+    console.warn('[save] Strategy 1 failed completely:', e.message);
+  }
+
+  // Strategy 2: data URL for small files (< 50MB)
+  if (blob.size < 50 * 1024 * 1024) {
+    try {
+      console.log('[save] Strategy 2: data URL (small file)');
+      const buf = await blob.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      let binary = '';
+      for (let i = 0; i < bytes.length; i += 8192) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + 8192, bytes.length)));
       }
-    );
-  });
+      const dataUrl = 'data:video/mp2t;base64,' + btoa(binary);
+      const dlId = await new Promise((resolve, reject) => {
+        chrome.downloads.download(
+          { url: dataUrl, filename, conflictAction: 'uniquify' },
+          (id) => {
+            if (chrome.runtime.lastError || !id) reject(new Error(chrome.runtime.lastError?.message || 'failed'));
+            else resolve(id);
+          }
+        );
+      });
+      console.log('[save] Strategy 2 OK, download ID:', dlId);
+      return;
+    } catch (e) {
+      console.warn('[save] Strategy 2 failed:', e.message);
+    }
+  }
+
+  // Strategy 3: open save page in new tab — always works
+  console.log('[save] Strategy 3: save via extension page');
+  const cacheKey = 'hls-save-' + Date.now();
+  const cache = await caches.open('hls-downloads');
+  await cache.put(new Request('https://hls/' + cacheKey), new Response(blob));
+  const saveUrl = chrome.runtime.getURL('save.html') + '?key=' + cacheKey + '&name=' + encodeURIComponent(filename);
+  chrome.tabs.create({ url: saveUrl, active: true });
 }

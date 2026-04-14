@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head><title>Saving video...</title>
+<style>
+  body { font-family: system-ui; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #1a1a2e; color: #fff; }
+  .msg { text-align: center; }
+  .spinner { width: 40px; height: 40px; border: 4px solid #333; border-top-color: #6C5CE7; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 16px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="msg">
+  <div class="spinner"></div>
+  <div id="status">Preparing download...</div>
+</div>
+<script>
+(async () => {
+  const params = new URLSearchParams(location.search);
+  const key = params.get('key');
+  const filename = params.get('name') || 'video.ts';
+  const status = document.getElementById('status');
+
+  try {
+    const cache = await caches.open('hls-downloads');
+    const resp = await cache.match('https://hls/' + key);
+    if (!resp) throw new Error('No data found — it may have expired');
+
+    status.textContent = 'Starting download...';
+    const blob = await resp.blob();
+    await cache.delete('https://hls/' + key);
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+
+    status.textContent = 'Download started! You can close this tab.';
+    setTimeout(() => { URL.revokeObjectURL(url); window.close(); }, 3000);
+  } catch (e) {
+    status.textContent = 'Error: ' + e.message;
+    status.style.color = '#E17055';
+  }
+})();
+</script>
+</body>
+</html>

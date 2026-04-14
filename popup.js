@@ -186,7 +186,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!overlay) {
               overlay = document.createElement('span');
               overlay.className = 'thumb-duration';
-              card.querySelector('.card-thumbnail').appendChild(overlay);
+              card.querySelector('.card-thumbnail')?.appendChild(overlay);
             }
             overlay.textContent = dur;
             const metaRow = card.querySelector('.card-meta');

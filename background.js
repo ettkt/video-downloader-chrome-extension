@@ -599,5 +599,7 @@ async function saveStitchedFile(chunks, filename) {
   const verify = await cache.match(cacheUrl);
   console.log('[save] Cache write verified:', !!verify, verify ? 'size=' + verify.headers.get('content-type') : 'MISSING');
   const saveUrl = chrome.runtime.getURL('save.html') + '?cache=' + encodeURIComponent(cacheUrl) + '&name=' + encodeURIComponent(filename);
-  chrome.tabs.create({ url: saveUrl, active: true });
+  const saveTab = await chrome.tabs.create({ url: saveUrl, active: false });
+  // Auto-close the save tab after download starts
+  setTimeout(() => { try { chrome.tabs.remove(saveTab.id); } catch {} }, 10000);
 }

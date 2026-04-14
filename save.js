@@ -41,9 +41,8 @@
     a.remove();
 
     status.textContent = 'Download started!';
-    detail.textContent = 'You can close this tab.';
     document.getElementById('spinner').style.display = 'none';
-    setTimeout(() => { URL.revokeObjectURL(url); window.close(); }, 5000);
+    setTimeout(() => { URL.revokeObjectURL(url); window.close(); }, 3000);
   } catch (e) {
     console.error('Save page error:', e);
     status.textContent = 'Error: ' + e.message;

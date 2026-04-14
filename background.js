@@ -179,6 +179,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
 
+    case 'pauseDownload': {
+      pauseDownload(message.url);
+      sendResponse({ ok: true });
+      return true;
+    }
+
+    case 'resumeDownload': {
+      resumeDownload(message.url);
+      sendResponse({ ok: true });
+      return true;
+    }
+
     case 'removeDownload': {
       removeDownload(message.url);
       sendResponse({ ok: true });
@@ -408,7 +420,30 @@ async function cancelDownload(url) {
   const dl = activeDownloads.get(url);
   if (dl) {
     dl.state = 'cancelled';
+    runningUrls.delete(url);
     await persistDownloads();
+  }
+}
+
+async function pauseDownload(url) {
+  const dl = activeDownloads.get(url);
+  if (dl && dl.state === 'downloading') {
+    dl.state = 'paused';
+    runningUrls.delete(url);
+    await persistDownloads();
+    refreshKeepalive();
+    console.log('[hls] Paused:', dl.filename, `(${dl.segsDone}/${dl.segsTotal})`);
+  }
+}
+
+async function resumeDownload(url) {
+  const dl = activeDownloads.get(url);
+  if (dl && dl.state === 'paused') {
+    dl.state = 'downloading';
+    await persistDownloads();
+    refreshKeepalive();
+    runDownload(dl);
+    console.log('[hls] Resumed:', dl.filename, `(${dl.segsDone}/${dl.segsTotal})`);
   }
 }
 
@@ -521,7 +556,7 @@ async function runDownload(dl) {
       if (idx >= segments.length) break;
 
       const current = activeDownloads.get(url);
-      if (!current || current.state === 'cancelled') { cancelled = true; return; }
+      if (!current || current.state === 'cancelled' || current.state === 'paused') { cancelled = true; return; }
 
       let lastErr = null;
       for (let attempt = 0; attempt < RETRIES; attempt++) {
@@ -568,7 +603,8 @@ async function runDownload(dl) {
     await Promise.all(workers);
 
     if (cancelled) {
-      dl.state = 'cancelled';
+      // If paused, keep state as-is (don't overwrite to cancelled)
+      if (dl.state !== 'paused') dl.state = 'cancelled';
       await persistDownloads();
       runningUrls.delete(url);
       refreshKeepalive();
@@ -732,7 +768,7 @@ async function resumeDownloads() {
     const downloads = await loadDownloads();
     for (const [url, dl] of Object.entries(downloads)) {
       // Clean up stale terminal states
-      if (dl.state === 'done' || dl.state === 'cancelled') {
+      if (dl.state === 'done' || dl.state === 'cancelled' || dl.state === 'paused') {
         activeDownloads.set(url, dl);
         continue;
       }

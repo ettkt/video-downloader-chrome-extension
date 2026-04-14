@@ -118,6 +118,7 @@ body {
 .dl-item:last-child { margin-bottom: 0; }
 
 .dl-item.state-downloading { border-color: rgba(79, 172, 254, 0.3); }
+.dl-item.state-paused  { border-color: rgba(230, 126, 34, 0.3); }
 .dl-item.state-saving  { border-color: rgba(108, 92, 231, 0.3); }
 .dl-item.state-done    { border-color: rgba(0, 184, 148, 0.3); }
 .dl-item.state-error,
@@ -142,6 +143,7 @@ body {
 .dl-item.state-cancelled .dl-icon,
 .dl-item.state-error .dl-icon { width: 32px; height: 32px; min-width: 32px; font-size: 9px; }
 
+.dl-item.state-paused  .dl-hero { background: linear-gradient(135deg, #2b1f0d 0%, #3a2e1a 100%); }
 .dl-item.state-done    .dl-hero { background: linear-gradient(135deg, #0d2b22 0%, #1a3a2e 100%); }
 .dl-item.state-error   .dl-hero,
 .dl-item.state-cancelled .dl-hero { background: linear-gradient(135deg, #2b1010 0%, #3a1a1a 100%); }
@@ -207,6 +209,7 @@ body {
   border: 1px solid rgba(79, 172, 254, 0.3);
 }
 
+.state-paused  .dl-status-pill { background: rgba(230, 126, 34, 0.25); color: #f0b27a; border-color: rgba(230, 126, 34, 0.4); }
 .state-saving  .dl-status-pill { background: rgba(108, 92, 231, 0.25); color: #a29bfe; border-color: rgba(108, 92, 231, 0.4); }
 .state-done    .dl-status-pill { background: rgba(0, 184, 148, 0.25); color: #00cec9; border-color: rgba(0, 184, 148, 0.4); }
 .state-error   .dl-status-pill,
@@ -232,6 +235,10 @@ body {
   background-size: 300% 100%;
   box-shadow: 0 0 8px rgba(79, 172, 254, 0.6);
   animation: shimmer-ltr 1.8s linear infinite;
+}
+
+.dl-progress-fill.paused {
+  background: #e67e22;
 }
 
 .dl-progress-fill.saving {
@@ -306,6 +313,10 @@ body {
   transition: all 0.15s ease;
 }
 
+.dl-pause { background: #fff3e0; color: #e67e22; }
+.dl-pause:hover { background: #e67e22; color: #fff; }
+.dl-resume { background: #e8f4fd; color: #0984E3; }
+.dl-resume:hover { background: #0984E3; color: #fff; }
 .dl-cancel { background: #fee; color: #E17055; }
 .dl-cancel:hover { background: #E17055; color: #fff; }
 .dl-remove { background: #f0f0f0; color: #999; }
@@ -705,6 +716,73 @@ body {
   font-size: 10px;
   color: #bbb;
 }
+
+/* === Custom Dialog === */
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  animation: fadeIn 0.15s ease;
+}
+
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+.dialog-box {
+  background: #fff;
+  border-radius: 14px;
+  padding: 20px;
+  width: 280px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  text-align: center;
+}
+
+.dialog-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #1a1a2e;
+  margin-bottom: 6px;
+}
+
+.dialog-message {
+  font-size: 12px;
+  color: #777;
+  line-height: 1.5;
+  margin-bottom: 16px;
+}
+
+.dialog-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.dialog-btn {
+  flex: 1;
+  height: 34px;
+  border: none;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.dialog-btn-cancel {
+  background: #f0f0f0;
+  color: #666;
+}
+
+.dialog-btn-cancel:hover { background: #e4e4e4; }
+
+.dialog-btn-confirm {
+  background: #E17055;
+  color: #fff;
+}
+
+.dialog-btn-confirm:hover { background: #d63031; }
 
 /* === Accessibility === */
 .btn-icon:focus-visible,

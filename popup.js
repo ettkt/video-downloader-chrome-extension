@@ -16,6 +16,29 @@ document.addEventListener('DOMContentLoaded', async () => {
   const dlIcon = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v8.5M3.5 6.5L7 10l3.5-3.5M2 12h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   const checkIcon = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 7.5l3 3 5-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   const cancelIcon = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`;
+  const pauseIcon = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="3" y="2" width="3" height="10" rx="1" fill="currentColor"/><rect x="8" y="2" width="3" height="10" rx="1" fill="currentColor"/></svg>`;
+  const playIcon = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 2l9 5-9 5V2z" fill="currentColor"/></svg>`;
+
+  // Custom dialog (replaces browser confirm())
+  function showDialog(title, message) {
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div');
+      overlay.className = 'dialog-overlay';
+      overlay.innerHTML = `
+        <div class="dialog-box">
+          <div class="dialog-title">${title}</div>
+          <div class="dialog-message">${message}</div>
+          <div class="dialog-buttons">
+            <button class="dialog-btn dialog-btn-cancel">Cancel</button>
+            <button class="dialog-btn dialog-btn-confirm">Clear</button>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+      overlay.querySelector('.dialog-btn-cancel').onclick = () => { overlay.remove(); resolve(false); };
+      overlay.querySelector('.dialog-btn-confirm').onclick = () => { overlay.remove(); resolve(true); };
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) { overlay.remove(); resolve(false); } });
+    });
+  }
   const ffmpegIcon = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="1" y="3" width="12" height="9" rx="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M4 6.5h6M4 9h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>`;
   const copyIcon = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="4.5" y="4.5" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M9.5 4.5V2.5a1 1 0 00-1-1h-6a1 1 0 00-1 1v6a1 1 0 001 1h2" stroke="currentColor" stroke-width="1.2"/></svg>`;
 
@@ -129,7 +152,23 @@ document.addEventListener('DOMContentLoaded', async () => {
           metaEl.innerHTML =
             `<span class="dl-tag type">HLS</span>` +
             (dl.segsTotal ? `<span class="dl-tag segs">${dl.segsDone}/${dl.segsTotal} segments</span>` : '');
-          actionsEl.innerHTML = `<button class="dl-btn dl-cancel">${cancelIcon} Cancel</button>`;
+          actionsEl.innerHTML = `<button class="dl-btn dl-pause">${pauseIcon} Pause</button><button class="dl-btn dl-cancel">${cancelIcon}</button>`;
+          actionsEl.querySelector('.dl-pause').onclick = () => {
+            chrome.runtime.sendMessage({ action: 'pauseDownload', url });
+          };
+          actionsEl.querySelector('.dl-cancel').onclick = () => {
+            chrome.runtime.sendMessage({ action: 'cancelDownload', url });
+          };
+        } else if (dl.state === 'paused') {
+          pillEl.textContent = dl.percent + '% paused';
+          fillEl.className = 'dl-progress-fill paused';
+          metaEl.innerHTML =
+            `<span class="dl-tag type">HLS</span>` +
+            (dl.segsTotal ? `<span class="dl-tag segs">${dl.segsDone}/${dl.segsTotal} segments</span>` : '');
+          actionsEl.innerHTML = `<button class="dl-btn dl-resume">${playIcon} Resume</button><button class="dl-btn dl-cancel">${cancelIcon}</button>`;
+          actionsEl.querySelector('.dl-resume').onclick = () => {
+            chrome.runtime.sendMessage({ action: 'resumeDownload', url });
+          };
           actionsEl.querySelector('.dl-cancel').onclick = () => {
             chrome.runtime.sendMessage({ action: 'cancelDownload', url });
           };
@@ -435,8 +474,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   });
 
-  clearBtn.addEventListener('click', () => {
-    if (!confirm('Clear all detected videos? You can rescan to find them again.')) return;
+  clearBtn.addEventListener('click', async () => {
+    const ok = await showDialog('Clear all?', 'All detected videos will be removed. You can rescan to find them again.');
+    if (!ok) return;
     chrome.runtime.sendMessage({ action: 'clearVideos', tabId: tab.id }, () => renderVideos([]));
   });
 

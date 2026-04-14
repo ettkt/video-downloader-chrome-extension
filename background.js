@@ -18,6 +18,7 @@ const IGNORE_PATTERNS = [
 ];
 
 const detectedVideos = new Map();  // tabId → Map<url, entry>
+const detectionHistory = new Map(); // tabId → Map<url, entry> — survives "clear", restored on rescan
 const blockedTabs = new Set();
 
 function shouldIgnore(url) {
@@ -50,6 +51,9 @@ function addDetection(tabId, url, type, source) {
     isStream: isStream(type),
   };
   tabVideos.set(url, entry);
+  // Save to history (survives "clear all", restored on rescan)
+  if (!detectionHistory.has(tabId)) detectionHistory.set(tabId, new Map());
+  detectionHistory.get(tabId).set(url, entry);
   updateBadge(tabId);
 
   if (source === 'network') {
@@ -120,12 +124,14 @@ chrome.webRequest.onHeadersReceived.addListener(
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status === 'loading') {
     detectedVideos.delete(tabId);
+    detectionHistory.delete(tabId); // New page = new history
     updateBadge(tabId);
   }
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   detectedVideos.delete(tabId);
+  detectionHistory.delete(tabId);
   blockedTabs.delete(tabId);
 });
 
@@ -265,6 +271,18 @@ async function handleRescan(tabId) {
 
   if (!tabUrl.startsWith('http')) return { ok: false, error: 'Cannot scan this page type' };
 
+  // Restore any previously detected videos from history (survives "clear all")
+  const history = detectionHistory.get(tabId);
+  if (history?.size) {
+    if (!detectedVideos.has(tabId)) detectedVideos.set(tabId, new Map());
+    const tabVideos = detectedVideos.get(tabId);
+    for (const [url, entry] of history) {
+      if (!tabVideos.has(url)) tabVideos.set(url, entry);
+    }
+    updateBadge(tabId);
+  }
+
+  // Also scan the DOM via content script
   if (await pingContentScript(tabId)) {
     return new Promise((resolve) => {
       chrome.tabs.sendMessage(tabId, { action: 'rescan' }, (resp) => {

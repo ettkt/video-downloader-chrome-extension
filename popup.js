@@ -436,6 +436,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   clearBtn.addEventListener('click', () => {
+    if (!confirm('Clear all detected videos? You can rescan to find them again.')) return;
     chrome.runtime.sendMessage({ action: 'clearVideos', tabId: tab.id }, () => renderVideos([]));
   });
 
